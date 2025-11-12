@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Spot Welder Control Server
-Flask + SocketIO + Weld Capture + Energy Calculation
+Flask + SocketIO + ESP32 + ADS1263 + Weld Capture
 """
 
 from flask import Flask, render_template, jsonify, request
@@ -13,6 +13,10 @@ import os
 from datetime import datetime
 from collections import deque
 import math
+
+# Import our drivers
+from esp_link import ESP32Link
+from ads1263 import get_adc
 
 app = Flask(__name__, 
             template_folder='../webui/templates',
@@ -59,12 +63,31 @@ log_buffer = deque(maxlen=500)
 status_lock = threading.Lock()
 weld_lock = threading.Lock()
 
+# Hardware instances
+esp_link = None
+adc = None
+
 def log(msg):
     """Add message to log buffer and print"""
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     log_msg = f"[{timestamp}] {msg}"
     log_buffer.append(log_msg)
     print(log_msg, flush=True)
+
+def on_esp_status(data):
+    """Callback when ESP32 sends STATUS"""
+    global esp_connected, temperature
+    with status_lock:
+        esp_status.update(data)
+        esp_connected = True
+        # Extract temperature if present
+        if 'temp' in data:
+            temperature = data['temp']
+
+def on_esp_cells(data):
+    """Callback when ESP32 sends CELLS"""
+    with status_lock:
+        cells_status.update(data)
 
 def load_settings():
     """Load settings from JSON"""
@@ -246,7 +269,17 @@ def save_settings_route():
     data = request.get_json()
     save_settings(data)
     
-    # TODO: Send to ESP32 via serial
+    # Send to ESP32
+    if esp_link and esp_link.connected:
+        mode = data.get('mode', 1)
+        d1 = data.get('d1', 50)
+        gap1 = data.get('gap1', 0)
+        d2 = data.get('d2', 0)
+        gap2 = data.get('gap2', 0)
+        d3 = data.get('d3', 0)
+        
+        cmd = f"SET,mode={mode},d1={d1},gap1={gap1},d2={d2},gap2={gap2},d3={d3}"
+        esp_link.send_command(cmd)
     
     return jsonify({"status": "ok"})
 
@@ -352,9 +385,19 @@ def status_broadcast_thread():
         
         # Capture data during weld
         if is_capturing and current_state == "FIRING":
+            # Read voltage from ESP32
             with status_lock:
                 v = esp_status.get("vpack", 0.0)
-                i = esp_status.get("i", 0.0)
+            
+            # Read current from ADS1263
+            i = 0.0
+            if adc and adc.initialized:
+                try:
+                    i = adc.read_current()
+                    if math.isnan(i):
+                        i = 0.0
+                except:
+                    i = 0.0
             
             with weld_lock:
                 elapsed = time.time() - weld_start_time
@@ -410,6 +453,33 @@ if __name__ == '__main__':
     settings = load_settings()
     weld_counter = settings.get('weld_counter', 0)
     log(f"Weld counter: {weld_counter}")
+    
+    # Initialize ADS1263
+    log("Initializing ADS1263...")
+    try:
+        adc = get_adc()
+        if adc and adc.initialized:
+            log("✅ ADS1263 initialized")
+        else:
+            log("⚠️ ADS1263 failed to initialize")
+    except Exception as e:
+        log(f"⚠️ ADS1263 error: {e}")
+        adc = None
+    
+    # Initialize ESP32 link
+    log("Initializing ESP32 link...")
+    esp_link = ESP32Link(
+        port='/dev/ttyUSB0',
+        baudrate=115200,
+        status_callback=on_esp_status,
+        cells_callback=on_esp_cells,
+        log_callback=log
+    )
+    
+    if esp_link.start():
+        log("✅ ESP32 link started")
+    else:
+        log("⚠️ ESP32 link failed to start")
     
     # Start background thread
     broadcast_thread = threading.Thread(target=status_broadcast_thread, daemon=True)
