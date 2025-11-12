@@ -1,0 +1,1 @@
+print('weldctl server ready')
