@@ -1,1 +1,421 @@
-print('weldctl server ready')
+#!/usr/bin/env python3
+"""
+Spot Welder Control Server
+Flask + SocketIO + Weld Capture + Energy Calculation
+"""
+
+from flask import Flask, render_template, jsonify, request
+from flask_socketio import SocketIO, emit
+import threading
+import time
+import json
+import os
+from datetime import datetime
+from collections import deque
+import math
+
+app = Flask(__name__, 
+            template_folder='../webui/templates',
+            static_folder='../webui/static')
+app.config['SECRET_KEY'] = 'weldctl_secret_2025'
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Directories
+WELD_HISTORY_DIR = "../weld_history"
+SETTINGS_FILE = "settings.json"
+PRESETS_FILE = "presets.json"
+os.makedirs(WELD_HISTORY_DIR, exist_ok=True)
+
+# Global state
+esp_status = {
+    "vpack": 0.0,
+    "i": 0.0,
+    "pulse_ms": 50,
+    "state": "IDLE",
+    "enabled": False,
+    "cooldown_ms": 0
+}
+
+cells_status = {
+    "V1": 0.0, "V2": 0.0, "V3": 0.0,
+    "C1": 0.0, "C2": 0.0, "C3": 0.0
+}
+
+temperature = None
+pedal_active = False
+weld_counter = 0
+esp_connected = False
+
+# Weld capture
+MAX_WELD_HISTORY = 15
+current_weld_data = {"voltage": [], "current": [], "timestamps": []}
+is_capturing = False
+weld_start_time = None
+
+# Logs buffer
+log_buffer = deque(maxlen=500)
+
+# Thread locks
+status_lock = threading.Lock()
+weld_lock = threading.Lock()
+
+def log(msg):
+    """Add message to log buffer and print"""
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    log_msg = f"[{timestamp}] {msg}"
+    log_buffer.append(log_msg)
+    print(log_msg, flush=True)
+
+def load_settings():
+    """Load settings from JSON"""
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        "mode": 1,
+        "d1": 50,
+        "gap1": 0,
+        "d2": 0,
+        "gap2": 0,
+        "d3": 0,
+        "pulse_ms": 50,
+        "weld_counter": 0
+    }
+
+def save_settings(data):
+    """Save settings to JSON"""
+    with open(SETTINGS_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+    log(f"Settings saved: mode={data.get('mode')}, d1={data.get('d1')}")
+
+def load_presets():
+    """Load presets from JSON"""
+    if os.path.exists(PRESETS_FILE):
+        try:
+            with open(PRESETS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        "P1": {"name": "Preset 1", "mode": 1, "d1": 50, "gap1": 0, "d2": 0, "gap2": 0, "d3": 0},
+        "P2": {"name": "Preset 2", "mode": 1, "d1": 50, "gap1": 0, "d2": 0, "gap2": 0, "d3": 0},
+        "P3": {"name": "Preset 3", "mode": 1, "d1": 50, "gap1": 0, "d2": 0, "gap2": 0, "d3": 0},
+        "P4": {"name": "Preset 4", "mode": 1, "d1": 50, "gap1": 0, "d2": 0, "gap2": 0, "d3": 0},
+        "P5": {"name": "Preset 5", "mode": 1, "d1": 50, "gap1": 0, "d2": 0, "gap2": 0, "d3": 0}
+    }
+
+def save_presets(data):
+    """Save presets to JSON"""
+    with open(PRESETS_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+    log(f"Presets saved")
+
+def calculate_energy(weld_data):
+    """Calculate energy delivered in Joules using trapezoidal integration"""
+    energy = 0.0
+    timestamps = weld_data["timestamps"]
+    voltages = weld_data["voltage"]
+    currents = weld_data["current"]
+    
+    if len(timestamps) < 2:
+        return 0.0
+    
+    for i in range(1, len(timestamps)):
+        dt = timestamps[i] - timestamps[i-1]
+        v_avg = (voltages[i] + voltages[i-1]) / 2.0
+        i_avg = (currents[i] + currents[i-1]) / 2.0
+        power = v_avg * i_avg  # Watts
+        energy += power * dt   # Joules
+    
+    return energy
+
+def save_weld_history(weld_data):
+    """Save weld to history, keep last MAX_WELD_HISTORY"""
+    global weld_counter
+    weld_counter += 1
+    
+    # Calculate stats
+    energy_j = calculate_energy(weld_data)
+    peak_current = max(weld_data["current"]) if weld_data["current"] else 0.0
+    duration_ms = (weld_data["timestamps"][-1] - weld_data["timestamps"][0]) * 1000 if len(weld_data["timestamps"]) > 1 else 0.0
+    
+    # Save weld data
+    filename = f"weld_{weld_counter:04d}.json"
+    filepath = os.path.join(WELD_HISTORY_DIR, filename)
+    
+    weld_record = {
+        "weld_number": weld_counter,
+        "timestamp": datetime.now().isoformat(),
+        "energy_joules": round(energy_j, 2),
+        "peak_current_amps": round(peak_current, 1),
+        "duration_ms": round(duration_ms, 1),
+        "settings": load_settings(),
+        "data": weld_data
+    }
+    
+    with open(filepath, 'w') as f:
+        json.dump(weld_record, f, indent=2)
+    
+    # Clean up old welds
+    weld_files = sorted([f for f in os.listdir(WELD_HISTORY_DIR) if f.startswith("weld_")])
+    if len(weld_files) > MAX_WELD_HISTORY:
+        for old_file in weld_files[:-MAX_WELD_HISTORY]:
+            os.remove(os.path.join(WELD_HISTORY_DIR, old_file))
+    
+    # Update counter in settings
+    settings = load_settings()
+    settings['weld_counter'] = weld_counter
+    save_settings(settings)
+    
+    log(f"Weld #{weld_counter} saved: {energy_j:.2f}J, {peak_current:.1f}A peak, {duration_ms:.1f}ms")
+    
+    return weld_record
+
+def get_weld_history_list():
+    """Get list of available weld history files"""
+    weld_files = sorted([f for f in os.listdir(WELD_HISTORY_DIR) if f.startswith("weld_")], reverse=True)
+    return weld_files[:MAX_WELD_HISTORY]
+
+def calculate_cell_balance():
+    """Calculate cell balance stats"""
+    c1 = cells_status.get("C1", 0.0)
+    c2 = cells_status.get("C2", 0.0)
+    c3 = cells_status.get("C3", 0.0)
+    
+    if c1 == 0 and c2 == 0 and c3 == 0:
+        return {"delta": 0.0, "status": "unknown", "color": "gray"}
+    
+    delta = max(c1, c2, c3) - min(c1, c2, c3)
+    
+    if delta < 0.05:
+        status = "balanced"
+        color = "green"
+    elif delta < 0.10:
+        status = "slight_imbalance"
+        color = "yellow"
+    else:
+        status = "imbalanced"
+        color = "red"
+    
+    return {"delta": round(delta, 3), "status": status, "color": color}
+
+# Routes
+@app.route('/')
+def index():
+    return render_template('control.html')
+
+@app.route('/control')
+def control():
+    return render_template('control.html')
+
+@app.route('/monitor')
+def monitor():
+    return render_template('monitor.html')
+
+@app.route('/logs')
+def logs():
+    return render_template('logs.html')
+
+@app.route('/api/status')
+def api_status():
+    """Current system status"""
+    with status_lock:
+        balance = calculate_cell_balance()
+        return jsonify({
+            **esp_status,
+            **cells_status,
+            "temperature": temperature,
+            "pedal_active": pedal_active,
+            "weld_counter": weld_counter,
+            "esp_connected": esp_connected,
+            "cell_balance": balance
+        })
+
+@app.route('/api/get_settings')
+def get_settings_route():
+    """Get saved settings"""
+    settings = load_settings()
+    return jsonify({"status": "ok", "settings": settings})
+
+@app.route('/api/save_settings', methods=['POST'])
+def save_settings_route():
+    """Save settings"""
+    data = request.get_json()
+    save_settings(data)
+    
+    # TODO: Send to ESP32 via serial
+    
+    return jsonify({"status": "ok"})
+
+@app.route('/api/get_presets')
+def get_presets_route():
+    """Get all presets"""
+    presets = load_presets()
+    return jsonify({"status": "ok", "presets": presets})
+
+@app.route('/api/save_preset', methods=['POST'])
+def save_preset_route():
+    """Save a preset"""
+    data = request.get_json()
+    preset_id = data.get('preset_id')
+    preset_data = data.get('data')
+    
+    presets = load_presets()
+    presets[preset_id] = preset_data
+    save_presets(presets)
+    
+    return jsonify({"status": "ok"})
+
+@app.route('/api/weld_history')
+def weld_history():
+    """Get list of weld history files"""
+    files = get_weld_history_list()
+    
+    # Get summary info for each weld
+    welds = []
+    for filename in files:
+        filepath = os.path.join(WELD_HISTORY_DIR, filename)
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+                welds.append({
+                    "filename": filename,
+                    "weld_number": data.get("weld_number"),
+                    "timestamp": data.get("timestamp"),
+                    "energy_joules": data.get("energy_joules"),
+                    "peak_current_amps": data.get("peak_current_amps"),
+                    "duration_ms": data.get("duration_ms")
+                })
+        except:
+            pass
+    
+    return jsonify({"status": "ok", "welds": welds})
+
+@app.route('/api/weld_data/<filename>')
+def weld_data(filename):
+    """Get specific weld data"""
+    filepath = os.path.join(WELD_HISTORY_DIR, filename)
+    if os.path.exists(filepath):
+        with open(filepath, 'r') as f:
+            return jsonify(json.load(f))
+    return jsonify({"status": "error", "message": "Weld not found"}), 404
+
+@app.route('/api/logs')
+def api_logs():
+    """Get recent logs"""
+    return jsonify({"logs": list(log_buffer)})
+
+# SocketIO events
+@socketio.on('connect')
+def handle_connect():
+    log("WebSocket client connected")
+    with status_lock:
+        balance = calculate_cell_balance()
+        emit('status_update', {
+            **esp_status,
+            **cells_status,
+            "temperature": temperature,
+            "weld_counter": weld_counter,
+            "esp_connected": esp_connected,
+            "cell_balance": balance
+        })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    log("WebSocket client disconnected")
+
+# Background threads
+def status_broadcast_thread():
+    """Broadcast status updates and capture weld data"""
+    global is_capturing, weld_start_time, current_weld_data, pedal_active
+    
+    last_state = "IDLE"
+    
+    while True:
+        time.sleep(0.01)  # 100Hz loop
+        
+        with status_lock:
+            current_state = esp_status.get("state", "IDLE")
+        
+        # Detect weld start
+        if current_state == "FIRING" and last_state != "FIRING":
+            log("🔥 Weld started - capturing data")
+            with weld_lock:
+                is_capturing = True
+                weld_start_time = time.time()
+                current_weld_data = {"voltage": [], "current": [], "timestamps": []}
+            pedal_active = True
+            socketio.emit('pedal_active', {"active": True})
+        
+        # Capture data during weld
+        if is_capturing and current_state == "FIRING":
+            with status_lock:
+                v = esp_status.get("vpack", 0.0)
+                i = esp_status.get("i", 0.0)
+            
+            with weld_lock:
+                elapsed = time.time() - weld_start_time
+                current_weld_data["timestamps"].append(elapsed)
+                current_weld_data["voltage"].append(v)
+                current_weld_data["current"].append(i)
+            
+            # Emit live weld data point
+            socketio.emit('weld_data_point', {
+                "t": elapsed,
+                "v": v,
+                "i": i
+            })
+        
+        # Detect weld end
+        if current_state != "FIRING" and last_state == "FIRING" and is_capturing:
+            log("✅ Weld ended - saving data")
+            with weld_lock:
+                is_capturing = False
+                weld_record = save_weld_history(current_weld_data)
+            
+            pedal_active = False
+            socketio.emit('pedal_active', {"active": False})
+            socketio.emit('weld_complete', {
+                "weld_number": weld_counter,
+                "energy_joules": weld_record["energy_joules"],
+                "peak_current_amps": weld_record["peak_current_amps"],
+                "duration_ms": weld_record["duration_ms"]
+            })
+        
+        last_state = current_state
+        
+        # Broadcast status every 100ms (10Hz)
+        if int(time.time() * 10) % 1 == 0:
+            with status_lock:
+                balance = calculate_cell_balance()
+                socketio.emit('status_update', {
+                    **esp_status,
+                    **cells_status,
+                    "temperature": temperature,
+                    "pedal_active": pedal_active,
+                    "weld_counter": weld_counter,
+                    "esp_connected": esp_connected,
+                    "cell_balance": balance
+                })
+
+if __name__ == '__main__':
+    print("=" * 60, flush=True)
+    print("🔥 Spot Welder Control Server", flush=True)
+    print("=" * 60, flush=True)
+    
+    # Load weld counter
+    settings = load_settings()
+    weld_counter = settings.get('weld_counter', 0)
+    log(f"Weld counter: {weld_counter}")
+    
+    # Start background thread
+    broadcast_thread = threading.Thread(target=status_broadcast_thread, daemon=True)
+    broadcast_thread.start()
+    log("Background broadcast thread started")
+    
+    # Run server
+    log("Starting Flask-SocketIO server on port 8080")
+    socketio.run(app, host='0.0.0.0', port=8080, debug=False, allow_unsafe_werkzeug=True)
