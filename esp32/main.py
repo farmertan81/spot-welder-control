@@ -5,7 +5,7 @@
 #   Button: short-press toggles enable; long-press enters deep sleep
 #   Pedal: active-low, debounced, ignored when disabled
 #   Shunt: CSS2H-3920R-L200F (0.0002 Ω)
-#   ASCII Command Interface over USB-CDC AND UART1 (GPIO12/13)
+#   ASCII Command Interface over USB-CDC AND UART1 (GPIO43/44)
 #    PING | GET_STATUS | GET_CELLS | ENABLE | DISABLE | FIRE,<ms> | ABORT
 #    DEBUG_ON | DEBUG_OFF | GET_TEMP
 # ====
@@ -45,14 +45,26 @@ next_weld_ok_at = 0
 last_pedal_change = 0
 pedal_state = 1  # 1=idle, 0=pressed
 
+# ---- Persistent weld pulse (used by pedal and can be set over ASCII) ----
+PULSE_MS_DEFAULT = 10
+PULSE_MS = PULSE_MS_DEFAULT
+
 # Thermistor on GPIO8
 THERM_PIN = 8
 therm_adc = ADC(Pin(THERM_PIN))
 therm_adc.atten(ADC.ATTN_11DB)  # 0-3.3V range
 
-# ---- Persistent weld pulse (used by pedal and can be set over ASCII) ----
-PULSE_MS_DEFAULT = 10
-PULSE_MS = PULSE_MS_DEFAULT
+# Thermistor constants (CALIBRATED - your proven values)
+SERIES_RESISTOR = 10000
+THERMISTOR_NOMINAL = 173000
+TEMPERATURE_NOMINAL = 20
+BETA = 3950
+
+# Thermistor smoothing (Klipper-style)
+TEMP_EMA_ALPHA = 0.05  # Lower = smoother (0.05-0.2 typical)
+TEMP_OUTLIER_THRESHOLD = 5.0  # Reject readings >5°C from current
+temp_ema = None
+temp_last_valid = None
 
 # System enable latch (short-press toggle)
 system_enabled = True
@@ -181,29 +193,37 @@ def print_both(s: str):
 
 # ---- Thermistor reading ----
 def read_thermistor_temp():
+    global temp_ema, temp_last_valid
     try:
-        raw = therm_adc.read()  # 0-4095
-        voltage = (raw / 4095.0) * 3.3
-        if voltage >= 3.29:  # Open circuit
-            return float('nan')
-        if voltage <= 0.01:  # Short circuit
-            return float('nan')
+        adc_value = therm_adc.read()
+        voltage = (adc_value / 4095.0) * 3.3
         
-        # Calculate resistance (10k pullup)
-        R_PULLUP = 10000.0
-        r_therm = R_PULLUP * voltage / (3.3 - voltage)
+        if voltage >= 3.3:
+            return temp_last_valid if temp_last_valid else float('nan')
         
-        # Steinhart-Hart (generic 10k NTC, beta=3950)
-        BETA = 3950.0
-        R25 = 10000.0
-        T25 = 298.15  # 25°C in Kelvin
+        resistance = SERIES_RESISTOR * voltage / (3.3 - voltage)
+        steinhart = resistance / THERMISTOR_NOMINAL
+        steinhart = math.log(steinhart)
+        steinhart /= BETA
+        steinhart += 1.0 / (TEMPERATURE_NOMINAL + 273.15)
+        steinhart = 1.0 / steinhart
+        steinhart -= 273.15
         
-        temp_k = 1.0 / ((1.0 / T25) + (1.0 / BETA) * math.log(r_therm / R25))
-        temp_c = temp_k - 273.15
+        # Outlier rejection
+        if temp_last_valid is not None:
+            if abs(steinhart - temp_last_valid) > TEMP_OUTLIER_THRESHOLD:
+                return temp_last_valid  # Reject spike, return last good value
         
-        return temp_c
+        # Exponential moving average
+        if temp_ema is None:
+            temp_ema = steinhart  # First reading
+        else:
+            temp_ema = (TEMP_EMA_ALPHA * steinhart) + ((1 - TEMP_EMA_ALPHA) * temp_ema)
+        
+        temp_last_valid = temp_ema
+        return round(temp_ema, 1)
     except Exception:
-        return float('nan')
+        return temp_last_valid if temp_last_valid else float('nan')
 
 # ---- INA226 / Scaling ----
 def make_i2c():
@@ -537,7 +557,7 @@ def usb_try_read_line():
     return None
 
 def cmd_handle(line):
-    global system_enabled, next_weld_ok_at, DEBUG
+    global system_enabled, next_weld_ok_at, DEBUG, PULSE_MS
     try:
         if not line:
             return
@@ -576,9 +596,9 @@ def cmd_handle(line):
             vp = ("%.3f" % v_pack) if (v_pack == v_pack) else "NaN"
             ip = ("%.3f" % i_now) if (i_now == i_now) else "NaN"
             tp = ("%.1f" % temp) if (temp == temp) else "NaN"
-            print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d" %
+            print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d,pulse_ms=%d" %
                        (1 if system_enabled else 0, state, vp, ip, tp,
-                        max(0, time.ticks_diff(next_weld_ok_at, time.ticks_ms()))))
+                        max(0, time.ticks_diff(next_weld_ok_at, time.ticks_ms())), PULSE_MS))
             return
 
         if up == "GET_CELLS":
@@ -614,12 +634,23 @@ def cmd_handle(line):
                 return
             if ms < 1: ms = 1
             if ms > 5000: ms = 5000
-            globals()['PULSE_MS'] = ms
+            PULSE_MS = ms
             print_both("OK,SET_PULSE,%d" % ms)
+            # Emit STATUS immediately so monitor updates instantly
+            v_pack = read_voltage_filtered()
+            i_now = ina_current_avg(2, 0.005) - I_OFFSET
+            temp = read_thermistor_temp()
+            state = ("DISABLED" if not system_enabled else ("ON" if FET_CHARGE.value() else "OFF"))
+            vp = ("%.3f" % v_pack) if (v_pack == v_pack) else "NaN"
+            ip = ("%.3f" % i_now) if (i_now == i_now) else "NaN"
+            tp = ("%.1f" % temp) if (temp == temp) else "NaN"
+            print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d,pulse_ms=%d" %
+                       (1 if system_enabled else 0, state, vp, ip, tp,
+                        max(0, time.ticks_diff(next_weld_ok_at, time.ticks_ms())), PULSE_MS))
             return
 
         if up == "GET_PULSE":
-            print_both("PULSE,%d" % globals().get('PULSE_MS', 0))
+            print_both("PULSE,%d" % PULSE_MS)
             return
 
         if up.startswith("SET_PATTERN"):
@@ -636,7 +667,7 @@ def cmd_handle(line):
                     return
                 if p1_ms < 1: p1_ms = 1
                 if p1_ms > 5000: p1_ms = 5000
-                globals()['PULSE_MS'] = p1_ms
+                PULSE_MS = p1_ms
                 print_both("OK,SET_PATTERN_P1,%d" % p1_ms)
             except Exception:
                 print_both("ERR,SET_PATTERN")
@@ -792,9 +823,9 @@ try:
                 dbg("Vsh=%.6f V  I_phys=%.3f A  I_INA=%.3f A  CAL=0x%04X  I_SCALE=%.6f" %
                     (vsh, i_phys, i_inareg, cal_now, I_SCALE))
             
-            print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d" %
+            print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d,pulse_ms=%d" %
                        (1 if system_enabled else 0, state, v_str, i_str, t_str,
-                        max(0, time.ticks_diff(next_weld_ok_at, time.ticks_ms()))))
+                        max(0, time.ticks_diff(next_weld_ok_at, time.ticks_ms())), PULSE_MS))
             if cells:
                 V1, V2, V3, C1, C2, C3 = cells
                 print_both("CELLS,V1=%.3f,V2=%.3f,V3=%.3f,C1=%.3f,C2=%.3f,C3=%.3f" %
