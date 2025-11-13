@@ -164,7 +164,7 @@ class ESP32Link:
                         data[key] = (val == '1' or val.lower() == 'true')
                     elif key == 'state':
                         data[key] = val
-                    elif key in ['vpack', 'i']:
+                    elif key in ['vpack', 'i', 'temp']:
                         data[key] = float(val)
                     elif key in ['cooldown_ms', 'pulse_ms']:
                         data[key] = int(val)
