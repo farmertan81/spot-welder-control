@@ -45,7 +45,7 @@ class ADS1263:
         self.gain_adc = 1.0
         self.FS = 8388607.0  # 24-bit signed max
         self.Rsh = 50e-6  # 50 µΩ
-        self.G_AMC = 1.0  # AMC1311B gain
+        self.G_AMC = 8.2  # AMC1311B gain
         
         # Quick scale factor: I(A) = code × scale_factor
         # scale_factor = (Vref / FS) / G_AMC / Rsh

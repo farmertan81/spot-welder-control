@@ -89,40 +89,6 @@ def on_esp_cells(data):
     with status_lock:
         cells_status.update(data)
 
-
-def on_esp_log(msg):
-    """Handle ESP32 log messages including FIRED events"""
-    global esp_status, is_capturing, weld_start_time, current_weld_data, pedal_active
-
-    # Check for weld trigger (start capture)
-    if "trigger weld" in msg:
-        log(msg)
-        with status_lock:
-            esp_status["state"] = "FIRING"
-
-    # Check for FIRED message (end capture)
-    elif "FIRED," in msg:
-        log(msg)
-        # Parse actual weld duration from FIRED message
-        weld_duration_ms = 0
-        try:
-            parts = msg.split(',')
-            if len(parts) >= 2:
-                weld_duration_ms = int(parts[1])
-                log(f"Parsed weld duration: {weld_duration_ms}ms")
-        except:
-            pass
-
-        # Stop capturing immediately
-        def reset_state():
-            time.sleep(0.005)  # 5ms buffer to capture last samples
-            with status_lock:
-                if esp_status.get("state") == "FIRING":
-                    esp_status["state"] = "IDLE"
-
-        threading.Thread(target=reset_state, daemon=True).start()
-
-
 def load_settings():
     """Load settings from JSON"""
     if os.path.exists(SETTINGS_FILE):
@@ -402,7 +368,7 @@ def status_broadcast_thread():
     last_state = "IDLE"
     
     while True:
-        time.sleep(0.001)  # 1000Hz loop
+        time.sleep(0.01)  # 100Hz loop
         
         with status_lock:
             current_state = esp_status.get("state", "IDLE")
@@ -428,7 +394,6 @@ def status_broadcast_thread():
             if adc and adc.initialized:
                 try:
                     i = adc.read_current()
-                    log(f"ADC: raw current = {i:.3f} A")
                     if math.isnan(i):
                         i = 0.0
                 except:
@@ -520,7 +485,7 @@ if __name__ == '__main__':
         baudrate=115200,
         status_callback=on_esp_status,
         cells_callback=on_esp_cells,
-        log_callback=on_esp_log
+        log_callback=log
     )
     
     if esp_link.start():
