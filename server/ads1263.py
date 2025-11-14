@@ -169,12 +169,14 @@ class ADS1263:
         status = resp[0]
         checksum = resp[4]
         if status != 0:
-            print(f"ADS1263: Status byte = 0x{status:02x}")
+#             print(f"ADS1263: Status byte = 0x{status:02x}")
         # Debug: check status and checksum
+            pass
         status = resp[0]
         checksum = resp[4]
         if status != 0:
-            print(f"ADS1263: Status byte = 0x{status:02x}")
+#             print(f"ADS1263: Status byte = 0x{status:02x}")
+            pass
         return raw
     
     def _measure_offset(self, n_samples=16):

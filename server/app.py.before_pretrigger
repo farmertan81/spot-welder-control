@@ -7,7 +7,6 @@ Flask + SocketIO + ESP32 + ADS1263 + Weld Capture
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
 import threading
-from collections import deque
 import time
 import json
 import os
@@ -49,12 +48,6 @@ cells_status = {
 temperature = None
 pedal_active = False
 weld_counter = 0
-# Pre-trigger buffer
-PRE_TRIGGER_MS = 10.0  # Capture 2ms before weld
-SAMPLE_RATE_HZ = 1000  # 1kHz sampling
-PRE_BUFFER_SIZE = int(PRE_TRIGGER_MS * SAMPLE_RATE_HZ / 1000)
-pre_trigger_buffer = deque(maxlen=PRE_BUFFER_SIZE)
-continuous_sampling = True
 esp_connected = False
 
 # Weld capture
@@ -403,89 +396,64 @@ def handle_disconnect():
 
 # Background threads
 def status_broadcast_thread():
-    """Broadcast status updates and capture weld data with pre-trigger buffering"""
-    global is_capturing, weld_start_time, current_weld_data, pedal_active, pre_trigger_buffer
-
+    """Broadcast status updates and capture weld data"""
+    global is_capturing, weld_start_time, current_weld_data, pedal_active
+    
     last_state = "IDLE"
-
+    
     while True:
         time.sleep(0.001)  # 1000Hz loop
-
+        
         with status_lock:
             current_state = esp_status.get("state", "IDLE")
-
-        # CONTINUOUS SAMPLING (always running to fill pre-trigger buffer)
-        if continuous_sampling and adc and adc.initialized:
-            try:
-                # Read voltage from ESP32
-                with status_lock:
-                    v = esp_status.get("vpack", 0.0)
-                
-                # Read current from ADS1263
-                i = adc.read_current()
-                if math.isnan(i):
-                    i = 0.0
-                
-                # Store in pre-trigger buffer with timestamp
-                sample = {
-                    "t": time.time(),
-                    "v": v,
-                    "i": i
-                }
-                pre_trigger_buffer.append(sample)
-            except:
-                pass
-
+        
         # Detect weld start
         if current_state == "FIRING" and last_state != "FIRING":
             log("🔥 Weld started - capturing data")
             with weld_lock:
                 is_capturing = True
                 weld_start_time = time.time()
-                
-                # Initialize weld data with pre-trigger samples
                 current_weld_data = {"voltage": [], "current": [], "timestamps": []}
-                
-                # Copy pre-trigger buffer into weld data
-                for sample in pre_trigger_buffer:
-                    elapsed = sample["t"] - weld_start_time
-                    current_weld_data["timestamps"].append(elapsed)
-                    current_weld_data["voltage"].append(sample["v"])
-                    current_weld_data["current"].append(sample["i"])
-                    log(f"Pre-trigger: t={elapsed*1000:.2f}ms, i={sample['i']:.3f}A")
-                
             pedal_active = True
             socketio.emit('pedal_active', {"active": True})
-
-        # Capture data during weld (data already in pre_trigger_buffer from continuous sampling)
+        
+        # Capture data during weld
         if is_capturing and current_state == "FIRING":
-            # Get the latest sample from pre-trigger buffer
-            if len(pre_trigger_buffer) > 0:
-                latest = list(pre_trigger_buffer)[-1]
-                
-                with weld_lock:
-                    elapsed = latest["t"] - weld_start_time
-                    # Only add if not already added (avoid duplicates)
-                    if len(current_weld_data["timestamps"]) == 0 or elapsed > current_weld_data["timestamps"][-1]:
-                        current_weld_data["timestamps"].append(elapsed)
-                        current_weld_data["voltage"].append(latest["v"])
-                        current_weld_data["current"].append(latest["i"])
-                        log(f"ADC: raw current = {latest['i']:.3f} A")
-
-                        # Emit live weld data point
-                        socketio.emit('weld_data_point', {
-                            "t": elapsed,
-                            "v": latest["v"],
-                            "i": latest["i"]
-                        })
-
+            # Read voltage from ESP32
+            with status_lock:
+                v = esp_status.get("vpack", 0.0)
+            
+            # Read current from ADS1263
+            i = 0.0
+            if adc and adc.initialized:
+                try:
+                    i = adc.read_current()
+                    log(f"ADC: raw current = {i:.3f} A")
+                    if math.isnan(i):
+                        i = 0.0
+                except:
+                    i = 0.0
+            
+            with weld_lock:
+                elapsed = time.time() - weld_start_time
+                current_weld_data["timestamps"].append(elapsed)
+                current_weld_data["voltage"].append(v)
+                current_weld_data["current"].append(i)
+            
+            # Emit live weld data point
+            socketio.emit('weld_data_point', {
+                "t": elapsed,
+                "v": v,
+                "i": i
+            })
+        
         # Detect weld end
         if current_state != "FIRING" and last_state == "FIRING" and is_capturing:
             log("✅ Weld ended - saving data")
             with weld_lock:
                 is_capturing = False
                 weld_record = save_weld_history(current_weld_data)
-
+            
             pedal_active = False
             socketio.emit('pedal_active', {"active": False})
             socketio.emit('weld_complete', {
@@ -494,9 +462,9 @@ def status_broadcast_thread():
                 "peak_current_amps": weld_record["peak_current_amps"],
                 "duration_ms": weld_record["duration_ms"]
             })
-
+        
         last_state = current_state
-
+        
         # Broadcast status every 100ms (10Hz)
         if int(time.time() * 10) % 1 == 0:
             with status_lock:
@@ -510,6 +478,7 @@ def status_broadcast_thread():
                     "esp_connected": esp_connected,
                     "cell_balance": balance
                 })
+
 def cleanup():
     """Cleanup GPIO on exit"""
     try:
