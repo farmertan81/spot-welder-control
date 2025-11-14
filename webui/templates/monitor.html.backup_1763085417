@@ -267,7 +267,7 @@ const annotationPlugin = {
         
         // Draw weld start marker (t=0)
         if (weldStartIdx >= 0) {
-            drawWeldStartMarker(ctx, chart, riseTimeData);
+            drawWeldStartMarker(ctx, chart);
         }
         
         // Draw metrics overlay
@@ -349,31 +349,30 @@ function drawPeakLine(ctx, chart, peakCurrent) {
     ctx.restore();
 }
 
-function drawWeldStartMarker(ctx, chart, riseData) {
+function drawWeldStartMarker(ctx, chart) {
     const xScale = chart.scales.x;
     const chartArea = chart.chartArea;
-
-    // Use actual weld start time from rise data, fallback to t=0
-    const weldStartTime = riseData ? riseData.startTime : 0;
-    const x = xScale.getPixelForValue(weldStartTime);
-
+    
+    const x = xScale.getPixelForValue(0); // Keep at t=0 for now
+    
     ctx.save();
     ctx.strokeStyle = '#ffff00';
     ctx.lineWidth = 2;
     ctx.setLineDash([]);
-
+    
     ctx.beginPath();
     ctx.moveTo(x, chartArea.top);
     ctx.lineTo(x, chartArea.bottom);
     ctx.stroke();
-
+    
     // Label
     ctx.fillStyle = '#ffff00';
     ctx.font = 'bold 12px monospace';
     ctx.fillText('t=0', x + 5, chartArea.bottom - 10);
-
+    
     ctx.restore();
 }
+
 function drawMetricsOverlay(ctx, chartArea, riseData, peakCurrent) {
     if (!riseData) return;
     

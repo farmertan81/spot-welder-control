@@ -41,7 +41,7 @@ class ADS1263:
         self.offset_counts = 0.0
         
         # Scaling constants
-        self.Vref = 5.0  # VDD reference (REFMUX = 0x24)
+        self.Vref = 2.5  # AMC1311 common-mode output voltage (VCMout)
         self.gain_adc = 1.0
         self.FS = 8388607.0  # 24-bit signed max
         self.Rsh = 50e-6  # 50 µΩ
@@ -87,7 +87,7 @@ class ADS1263:
             self._wr_reg(REG_REFMUX, 0x24)
             
             # Single-ended IN6 (P=IN6, N=AINCOM)
-            self._wr_reg(REG_INPMUX, (0x0 << 4) | 0x1)  # IN0-IN1 differential
+            self._wr_reg(REG_INPMUX, (0x6 << 4) | 0x7)  # IN6-IN7 differential
             
             # PGA disabled (gain=1)
             
@@ -179,15 +179,9 @@ class ADS1263:
             pass
         return raw
     
-    def _measure_offset(self, n_samples=50):
+    def _measure_offset(self, n_samples=16):
         """Measure idle offset"""
-        print("ADS1263: Waiting for AMC1311 to settle...")
-        time.sleep(2.0)  # Let AMC1311 stabilize
         print("ADS1263: Measuring offset...")
-        # Discard first 5 samples
-        for _ in range(5):
-            if self._wait_drdy(0.5):
-                self._read_counts()
         acc = 0
         got = 0
         for _ in range(n_samples):

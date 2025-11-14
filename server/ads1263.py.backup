@@ -23,14 +23,16 @@ CMD_RDATA1 = 0x12
 
 # Registers
 REG_ID = 0x00
-REG_MODE0 = 0x01
-REG_MODE1 = 0x02
-REG_MODE2 = 0x03
-REG_MODE3 = 0x04
-REG_REF = 0x05
+REG_POWER = 0x01
+REG_INTERFACE = 0x02
+REG_MODE0 = 0x03
+REG_MODE1 = 0x04
+REG_MODE2 = 0x05
+# REG_MODE3 removed (not used)
+# REG_REF removed (not used)
 REG_REFMUX = 0x0F
-REG_INPMUX = 0x0A
-REG_PGA = 0x0B
+REG_INPMUX = 0x06
+# REG_PGA removed (not used)
 
 class ADS1263:
     def __init__(self):
@@ -39,11 +41,11 @@ class ADS1263:
         self.offset_counts = 0.0
         
         # Scaling constants
-        self.Vref = 1.44  # AMC1311 common-mode output voltage (VCMout)
+        self.Vref = 5.0  # Internal 2.5V reference
         self.gain_adc = 1.0
-        self.FS = 8388607.0  # 24-bit signed max
+        self.FS = 2147483647.0  # 24-bit signed max
         self.Rsh = 50e-6  # 50 µΩ
-        self.G_AMC = 8.2  # AMC1311B gain
+        self.G_AMC = 1.0  # AMC1311B gain
         
         # Quick scale factor: I(A) = code × scale_factor
         # scale_factor = (Vref / FS) / G_AMC / Rsh
@@ -73,22 +75,24 @@ class ADS1263:
             
             # Configure for fast single-ended capture
             # MODE0: 38.4 kSPS (0x00 for fastest, adjust if needed)
-            self._wr_reg(REG_MODE0, 0x14)  # DELAY=35us for stability
+            self._wr_reg(REG_POWER, 0x11)  # Enable internal reference
+            self._wr_reg(REG_MODE0, 0x04)  # DELAY=35us for stability
+            self._wr_reg(REG_INTERFACE, 0x00)  # Disable status byte, checksum, timeout
             
             # MODE1: Enable input buffer
             self._wr_reg(REG_MODE1, 0x84)  # FIR filter
             
-            self._wr_reg(REG_MODE2, 0x80)  # PGA bypassed
-            self._wr_reg(REG_MODE3, 0x00)
+            self._wr_reg(REG_MODE2, 0x8F)  # PGA bypassed
             
             # VDD/VSS as reference (5V)
             self._wr_reg(REG_REFMUX, 0x24)
+            refmux_rb = self._rd_reg(REG_REFMUX)
+            print(f"ADS1263: REFMUX readback = 0x{refmux_rb:02X}")
             
             # Single-ended IN6 (P=IN6, N=AINCOM)
-            self._wr_reg(REG_INPMUX, (0x6 << 4) | 0x7)  # IN6-IN7 differential
+            self._wr_reg(REG_INPMUX, (0x1 << 4) | 0x0)  # IN6-IN7 differential
             
             # PGA disabled (gain=1)
-            self._wr_reg(REG_PGA, 0x00)
             
             # Read back config
             m0 = self._rd_reg(REG_MODE0)
@@ -154,26 +158,18 @@ class ADS1263:
         time.sleep(0.003)
     
     def _read_counts(self):
-        """Read 24-bit signed ADC value"""
+        """Read 32-bit signed ADC1 value"""
         self._cs_low()
         resp = self.spi.xfer2([CMD_RDATA1, 0, 0, 0, 0])
         self._cs_high()
         
-        raw24 = (resp[1] << 16) | (resp[2] << 8) | resp[3]
-        if raw24 & 0x800000:
-            raw = raw24 - (1 << 24)
+        raw32 = (resp[0] << 24) | (resp[1] << 16) | (resp[2] << 8) | resp[3]
+        if raw32 & 0x80000000:
+            raw = raw32 - (1 << 32)
         else:
-            raw = raw24
-        # Debug: check status and checksum
-        status = resp[0]
-        checksum = resp[4]
-        if status != 0:
-            print(f"ADS1263: Status byte = 0x{status:02x}")
-        # Debug: check status and checksum
-        status = resp[0]
-        checksum = resp[4]
-        if status != 0:
-            print(f"ADS1263: Status byte = 0x{status:02x}")
+            raw = raw32
+#             print(f"ADS1263: Status byte = 0x{status:02x}")
+#             print(f"ADS1263: Status byte = 0x{status:02x}")
         return raw
     
     def _measure_offset(self, n_samples=16):
@@ -199,7 +195,7 @@ class ADS1263:
             return float('nan')
         
         raw = self._read_counts()
-        raw_corr = raw  # - self.offset_counts
+        raw_corr = raw - self.offset_counts
         
         # Convert to amps
         I = raw_corr * self.scale_factor
@@ -228,7 +224,7 @@ class ADS1263:
             
             t_sample = time.time()
             raw = self._read_counts()
-            raw_corr = raw  # - self.offset_counts
+            raw_corr = raw - self.offset_counts
             I = raw_corr * self.scale_factor
             
             # Timestamp in microseconds relative to start

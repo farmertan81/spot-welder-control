@@ -41,7 +41,7 @@ class ADS1263:
         self.offset_counts = 0.0
         
         # Scaling constants
-        self.Vref = 5.0  # VDD reference (REFMUX = 0x24)
+        self.Vref = 2.5  # AMC1311 common-mode output voltage (VCMout)
         self.gain_adc = 1.0
         self.FS = 8388607.0  # 24-bit signed max
         self.Rsh = 50e-6  # 50 µΩ
