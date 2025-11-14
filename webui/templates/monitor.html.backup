@@ -216,7 +216,7 @@
         <div class="panel">
             <h2>Waveform</h2>
             <div class="controls">
-                <label>Y-Axis Max Current (A): <input type="number" id="y-max" value="2000" step="100"></label>
+                <label>Y-Axis Max Current (A): <input type="number" id="y-max" value="3500" step="100"></label>
                 <button class="btn btn-primary" onclick="updateYAxis()">Update Scale</button>
             </div>
             <div class="chart-container">
@@ -288,7 +288,7 @@
                         ticks: { color: '#ff6b35' },
                         grid: { color: '#333' },
                         min: 0,
-                        max: 2000
+                        max: 3500
                     },
                     y1: {
                         type: 'linear',
@@ -390,7 +390,7 @@
         }
         
         // Load specific weld data
-        async function loadWeldData(filename) {
+        async function loadWeldData(filename, event) {
             const resp = await fetch(`/api/weld_data/${filename}`);
             const weld = await resp.json();
             
@@ -414,7 +414,7 @@
                 
                 // Highlight selected
                 document.querySelectorAll('.weld-item').forEach(item => item.classList.remove('active'));
-                event.target.closest('.weld-item').classList.add('active');
+                if (event && event.target) event.target.closest('.weld-item').classList.add('active');
             }
         }
         
