@@ -476,14 +476,32 @@ def do_weld_ms(pulse_ms):
     except Exception:
         prev = (0,0,0)
     led_red()
+    
+    # Stream voltage during weld
+    t_start_us = time.ticks_us()
+    t_start_ms = time.ticks_ms()
     FET_WELD1.on(); FET_WELD2.on()
-    time.sleep_ms(int(pulse_ms))
+    
+    # Fast voltage sampling during weld
+    sample_count = 0
+    while time.ticks_diff(time.ticks_ms(), t_start_ms) < pulse_ms:
+        raw = i2c_read_u16(REG_BUS_VOLT)
+        if raw is not None:
+            v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
+            t_us = time.ticks_diff(time.ticks_us(), t_start_us)
+            print("VDATA,%.3f,%d" % (v, t_us))
+            sample_count += 1
+    
     FET_WELD1.off(); FET_WELD2.off()
+    t_actual_us = time.ticks_diff(time.ticks_us(), t_start_us)
+    print("VDATA_END,%d,%d" % (sample_count, t_actual_us))
+    
     try:
         led[0] = prev; led.write()
     except Exception:
         pass
     next_weld_ok_at = time.ticks_add(time.ticks_ms(), WELD_LOCKOUT_MS)
+
 
 def trigger_weld():
     global PULSE_MS
@@ -1316,14 +1334,32 @@ def do_weld_ms(pulse_ms):
     except Exception:
         prev = (0,0,0)
     led_red()
+    
+    # Stream voltage during weld
+    t_start_us = time.ticks_us()
+    t_start_ms = time.ticks_ms()
     FET_WELD1.on(); FET_WELD2.on()
-    time.sleep_ms(int(pulse_ms))
+    
+    # Fast voltage sampling during weld
+    sample_count = 0
+    while time.ticks_diff(time.ticks_ms(), t_start_ms) < pulse_ms:
+        raw = i2c_read_u16(REG_BUS_VOLT)
+        if raw is not None:
+            v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
+            t_us = time.ticks_diff(time.ticks_us(), t_start_us)
+            print("VDATA,%.3f,%d" % (v, t_us))
+            sample_count += 1
+    
     FET_WELD1.off(); FET_WELD2.off()
+    t_actual_us = time.ticks_diff(time.ticks_us(), t_start_us)
+    print("VDATA_END,%d,%d" % (sample_count, t_actual_us))
+    
     try:
         led[0] = prev; led.write()
     except Exception:
         pass
     next_weld_ok_at = time.ticks_add(time.ticks_ms(), WELD_LOCKOUT_MS)
+
 
 def trigger_weld():
     global PULSE_MS
