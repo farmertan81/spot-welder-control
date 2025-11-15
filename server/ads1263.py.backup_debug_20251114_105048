@@ -212,8 +212,6 @@ class ADS1263:
         
         # Convert to amps
         I = raw_corr * self.scale_factor
-        # Debug (idle): comment left in place; keep quiet here to reduce spam
-        # print(f"ADC: counts={int(raw_corr)} I={I:.3f} A")
         return I
     
     def capture_waveform(self, duration_ms=30, pre_trigger_ms=5):

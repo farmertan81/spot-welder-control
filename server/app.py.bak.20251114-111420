@@ -8,8 +8,6 @@ from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
 import threading
 from collections import deque
-import math
-from collections import deque
 import time
 import json
 import os
