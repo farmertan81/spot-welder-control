@@ -479,6 +479,10 @@ def do_weld_ms(pulse_ms):
         prev = (0,0,0)
     led_red()
     
+    # Turn OFF charger FET during weld (critical!)
+    FET_CHARGE.off()
+    time.sleep(0.001)  # Brief delay to ensure FET is off
+    
     # Stream voltage during weld
     t_start_us = time.ticks_us()
     t_start_ms = time.ticks_ms()
@@ -1346,6 +1350,10 @@ def do_weld_ms(pulse_ms):
     except Exception:
         prev = (0,0,0)
     led_red()
+    
+    # Turn OFF charger FET during weld (critical!)
+    FET_CHARGE.off()
+    time.sleep(0.001)  # Brief delay to ensure FET is off
     
     # Stream voltage during weld
     t_start_us = time.ticks_us()
