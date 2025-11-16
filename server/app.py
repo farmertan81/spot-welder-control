@@ -8,8 +8,6 @@ from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
 import threading
 from collections import deque
-import math
-from collections import deque
 import time
 import json
 import os
@@ -19,7 +17,7 @@ import math
 
 # Import our drivers
 from esp_link import ESP32Link
-from ads1263 import get_adc
+from ads1256_driver import ADS1256
 
 app = Flask(__name__, 
             template_folder='../webui/templates',
@@ -52,7 +50,7 @@ temperature = None
 pedal_active = False
 weld_counter = 0
 # Pre-trigger buffer
-PRE_TRIGGER_MS = 100.0  # Capture 2ms before weld
+PRE_TRIGGER_MS = 10.0  # Capture 2ms before weld
 SAMPLE_RATE_HZ = 1000  # 1kHz sampling
 PRE_BUFFER_SIZE = int(PRE_TRIGGER_MS * SAMPLE_RATE_HZ / 1000)
 pre_trigger_buffer = deque(maxlen=PRE_BUFFER_SIZE)
@@ -62,8 +60,6 @@ esp_connected = False
 # Weld capture
 MAX_WELD_HISTORY = 15
 current_weld_data = {"voltage": [], "current": [], "timestamps": []}
-weld_buffer_snapshot = []
-actual_weld_duration_ms = 0
 is_capturing = False
 weld_start_time = None
 
@@ -115,15 +111,12 @@ def on_esp_log(msg):
     elif "FIRED," in msg:
         log(msg)
         # Parse actual weld duration from FIRED message
-        global actual_weld_duration_ms
+        weld_duration_ms = 0
         try:
             parts = msg.split(',')
             if len(parts) >= 2:
-                actual_weld_duration_ms = int(parts[1])
-                log(f"Parsed weld duration: {actual_weld_duration_ms}ms")
-                # Take snapshot of buffer immediately
-                global weld_buffer_snapshot
-                weld_buffer_snapshot = list(pre_trigger_buffer)
+                weld_duration_ms = int(parts[1])
+                log(f"Parsed weld duration: {weld_duration_ms}ms")
         except:
             pass
 
@@ -134,7 +127,9 @@ def on_esp_log(msg):
                 if esp_status.get("state") == "FIRING":
                     esp_status["state"] = "IDLE"
 
-        threading.Thread(target=reset_state, daemon=True).start()  # Disabled - let ESP32 control state
+        threading.Thread(target=reset_state, daemon=True).start()
+    else:
+        log(msg)  # Log all other ESP32 messages
 
 
 def load_settings():
@@ -316,21 +311,18 @@ def save_settings_route():
     """Save settings"""
     data = request.get_json()
     save_settings(data)
-    
-    # Send to ESP32
-    if esp_link and esp_link.connected:
-        mode = data.get('mode', 1)
-        d1 = data.get('d1', 50)
-        gap1 = data.get('gap1', 0)
-        d2 = data.get('d2', 0)
-        gap2 = data.get('gap2', 0)
-        d3 = data.get('d3', 0)
-        
-        cmd = f"SET,mode={mode},d1={d1},gap1={gap1},d2={d2},gap2={gap2},d3={d3}"
-        esp_link.send_command(cmd)
-    
-    return jsonify({"status": "ok"})
 
+    # Send to ESP32
+    log(f"DEBUG: esp_link={esp_link}, connected={esp_link.connected if esp_link else 'N/A'}")
+    if esp_link and esp_link.connected:
+        d1 = data.get('d1', 50)
+        cmd = f"SET_PULSE,{d1}"
+        log(f"DEBUG: Sending command: {cmd}")
+        esp_link.send_command(cmd)
+    else:
+        log("⚠️ ESP32 not connected - cannot send SET_PULSE")
+
+    return jsonify({"status": "ok"})
 @app.route('/api/get_presets')
 def get_presets_route():
     """Get all presets"""
@@ -409,26 +401,31 @@ def handle_disconnect():
     log("WebSocket client disconnected")
 
 # Background threads
-def fast_adc_sampling_thread():
-    """Dedicated thread for fast ADC sampling (no locks, no delays)"""
-    global pre_trigger_buffer
-    
-    log("Fast ADC sampling thread started")
-    
+def status_broadcast_thread():
+    """Broadcast status updates and capture weld data with pre-trigger buffering"""
+    global is_capturing, weld_start_time, current_weld_data, pedal_active, pre_trigger_buffer
+
+    last_state = "IDLE"
+
     while True:
+        time.sleep(0.001)  # 1000Hz loop
+
+        with status_lock:
+            current_state = esp_status.get("state", "IDLE")
+
+        # CONTINUOUS SAMPLING (always running to fill pre-trigger buffer)
         if continuous_sampling and adc and adc.initialized:
             try:
-                # Read current from ADS1263 (blocking on DRDY)
+                # Read voltage from ESP32
+                with status_lock:
+                    v = esp_status.get("vpack", 0.0)
+                
+                # Read current from ADS1263
                 i = adc.read_current()
                 if math.isnan(i):
                     i = 0.0
-                else:
-                    i = i - idle_baseline
                 
-                # Get voltage (quick, no lock needed for read)
-                v = esp_status.get("vpack", 0.0)
-                
-                # Store sample
+                # Store in pre-trigger buffer with timestamp
                 sample = {
                     "t": time.time(),
                     "v": v,
@@ -437,22 +434,6 @@ def fast_adc_sampling_thread():
                 pre_trigger_buffer.append(sample)
             except:
                 pass
-        else:
-            time.sleep(0.001)  # Sleep when not sampling
-
-def status_broadcast_thread():
-    """Broadcast status updates and capture weld data with pre-trigger buffering"""
-    global is_capturing, weld_start_time, current_weld_data, pedal_active, pre_trigger_buffer
-
-    last_state = "IDLE"
-
-    while True:
-        time.sleep(0.0001)  # Let ADC pace the loop
-
-        with status_lock:
-            current_state = esp_status.get("state", "IDLE")
-
-        # ADC sampling now handled by fast_adc_sampling_thread
 
         # Detect weld start
         if current_state == "FIRING" and last_state != "FIRING":
@@ -464,9 +445,8 @@ def status_broadcast_thread():
                 # Initialize weld data with pre-trigger samples
                 current_weld_data = {"voltage": [], "current": [], "timestamps": []}
                 
-                # Copy pre-trigger buffer into weld data (make a snapshot to avoid race condition)
-                buffer_snapshot = list(pre_trigger_buffer)
-                for sample in buffer_snapshot:
+                # Copy pre-trigger buffer into weld data
+                for sample in pre_trigger_buffer:
                     elapsed = sample["t"] - weld_start_time
                     current_weld_data["timestamps"].append(elapsed)
                     current_weld_data["voltage"].append(sample["v"])
@@ -485,7 +465,7 @@ def status_broadcast_thread():
                 with weld_lock:
                     elapsed = latest["t"] - weld_start_time
                     # Only add if not already added (avoid duplicates)
-                    if (len(current_weld_data["timestamps"]) == 0 or elapsed > current_weld_data["timestamps"][-1]):
+                    if len(current_weld_data["timestamps"]) == 0 or elapsed > current_weld_data["timestamps"][-1]:
                         current_weld_data["timestamps"].append(elapsed)
                         current_weld_data["voltage"].append(latest["v"])
                         current_weld_data["current"].append(latest["i"])
@@ -500,24 +480,8 @@ def status_broadcast_thread():
 
         # Detect weld end
         if current_state != "FIRING" and last_state == "FIRING" and is_capturing:
-            # Wait for fast thread to capture remaining samples
-            time.sleep(0.005)  # 20ms delay to capture ~130 more samples at 6.6kHz
-            
-            log("✅ Weld ended - capturing all samples from buffer")
-            
-            # Grab all samples from buffer that occurred during weld
-            buffer_snapshot = list(pre_trigger_buffer)
+            log("✅ Weld ended - saving data")
             with weld_lock:
-                for sample in buffer_snapshot:
-                    elapsed = sample["t"] - weld_start_time
-                    # Add all samples (pre-trigger already added, this gets during+post weld)
-                    if elapsed >= 0 and (actual_weld_duration_ms == 0 or elapsed <= actual_weld_duration_ms / 1000.0):  # Only samples during weld
-                        if len(current_weld_data["timestamps"]) == 0 or elapsed > current_weld_data["timestamps"][-1]:
-                            current_weld_data["timestamps"].append(elapsed)
-                            current_weld_data["voltage"].append(sample["v"])
-                            current_weld_data["current"].append(sample["i"])
-                
-                log(f"Captured {len(current_weld_data['timestamps'])} total samples")
                 is_capturing = False
                 weld_record = save_weld_history(current_weld_data)
 
@@ -570,23 +534,9 @@ if __name__ == '__main__':
     # Initialize ADS1263
     log("Initializing ADS1263...")
     try:
-        adc = get_adc()
+        adc = ADS1256(); adc.init()
         if adc and adc.initialized:
             log("✅ ADS1263 initialized")
-            
-            # Measure idle baseline (AMC1311 zero-current offset)
-            log("Measuring idle baseline...")
-            time.sleep(1.0)  # Wait for thermal drift to settle
-            idle_samples = []
-            for _ in range(50):
-                i = adc.read_current()
-                if not math.isnan(i):
-                    idle_samples.append(i)
-                time.sleep(0.02)
-            
-            global idle_baseline
-            idle_baseline = sum(idle_samples) / len(idle_samples) if idle_samples else 0.0
-            log(f"✅ Idle baseline: {idle_baseline:.1f} A")
         else:
             log("⚠️ ADS1263 failed to initialize")
     except Exception as e:
@@ -609,10 +559,6 @@ if __name__ == '__main__':
         log("⚠️ ESP32 link failed to start")
     
     # Start background thread
-    # Start fast ADC sampling thread
-    fast_thread = threading.Thread(target=fast_adc_sampling_thread, daemon=True)
-    fast_thread.start()
-    
     broadcast_thread = threading.Thread(target=status_broadcast_thread, daemon=True)
     broadcast_thread.start()
     log("Background broadcast thread started")
