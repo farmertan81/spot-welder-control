@@ -522,11 +522,19 @@
                         nameEl.textContent = presets[key].name || key;
                     }
                 }
+                
+                // Restore active preset highlight from localStorage
+                const savedPreset = localStorage.getItem('activePreset');
+                if (savedPreset && presets[savedPreset]) {
+                    currentPreset = savedPreset;
+                    const btn = document.querySelector('.preset-btn[onclick*="' + savedPreset + '"]');
+                    if (btn) btn.classList.add('active');
+                }
             }
         }
         
         // Load preset
-        function loadPreset(presetId) {
+        async function loadPreset(presetId) {
             if (!presets[presetId]) return;
             
             const p = presets[presetId];
@@ -542,7 +550,11 @@
             
             // Highlight active preset
             document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
-            event.target.closest('.preset-btn').classList.add('active');
+            const btn = document.querySelector('.preset-btn[onclick*="' + presetId + '"]');
+            if (btn) btn.classList.add('active');
+            
+            // Auto-save settings to ESP32
+            await saveSettings(true);
         }
         
         // Save preset
