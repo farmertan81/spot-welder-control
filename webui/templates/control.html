@@ -387,7 +387,7 @@
                         </div>
                     </div>
                     
-                    <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="saveSettings()">💾 Save Settings</button>
+                    <button class="btn btn-primary" style="width: 70px; margin-top: 10px; padding: 4px 8px; font-size: 0.85em;" onclick="saveSettings()">Save</button>
                 </div>
                 
                 <!-- Presets -->
@@ -415,7 +415,7 @@
                             <div style="font-size: 0.8em; color: #aaa;" id="p5-name">Preset 5</div>
                         </div>
                     </div>
-                    <button class="btn btn-secondary" style="width: 100%;" onclick="savePreset()">💾 Save Current as Preset</button>
+                    <button class="btn btn-secondary" style="width: 70px; padding: 4px 8px; font-size: 0.85em;" onclick="savePreset()">Save</button>
                 </div>
             </div>
         </div>
@@ -487,7 +487,7 @@
         }
         
         // Save settings
-        async function saveSettings() {
+        async function saveSettings(silent = false) {
             const settings = {
                 mode: parseInt(document.getElementById('mode').value),
                 d1: parseInt(document.getElementById('d1').value),
@@ -503,7 +503,7 @@
                 body: JSON.stringify(settings)
             });
             
-            if (resp.ok) {
+            if (resp.ok && !silent) {
                 alert('✅ Settings saved!');
             }
         }
@@ -559,12 +559,14 @@
         
         // Save preset
         async function savePreset() {
-            const presetId = prompt('Save to which preset? (P1-P5)', currentPreset || 'P1');
-            if (!presetId || !presetId.match(/^P[1-5]$/)) return;
-            
-            const name = prompt('Preset name:', presets[presetId]?.name || presetId);
+            // Use the currently active preset
+            if (!currentPreset) {
+                alert('⚠️ Please select a preset first!');
+                return;
+            }
+
+            const name = prompt('Preset name for ' + currentPreset + ':', presets[currentPreset]?.name || currentPreset);
             if (!name) return;
-            
             const presetData = {
                 name: name,
                 mode: parseInt(document.getElementById('mode').value),
@@ -578,7 +580,7 @@
             const resp = await fetch('/api/save_preset', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({preset_id: presetId, data: presetData})
+                body: JSON.stringify({preset_id: currentPreset, data: presetData})
             });
             
             if (resp.ok) {
