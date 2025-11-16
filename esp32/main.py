@@ -40,9 +40,11 @@ BUTTON_DEBOUNCE_MS = 30
 PEDAL_PIN = 7
 pedal = Pin(PEDAL_PIN, Pin.IN, Pin.PULL_UP)
 PEDAL_DEBOUNCE_MS = 25
+WELD_DEBOUNCE_MS = 500  # Minimum time between welds (ms)
 WELD_LOCKOUT_MS = 300
 next_weld_ok_at = 0
 last_pedal_change = 0
+last_weld_time = 0
 pedal_state = 1  # 1=idle, 0=pressed
 
 # ---- Persistent weld pulse (used by pedal and can be set over ASCII) ----
@@ -507,7 +509,12 @@ def do_weld_ms(pulse_ms):
 
 
 def trigger_weld():
-    global PULSE_MS
+    global PULSE_MS, last_weld_time
+    now = time.ticks_ms()
+    if time.ticks_diff(now, last_weld_time) < WELD_DEBOUNCE_MS:
+        print_both("PEDAL: ignored (weld debounce)")
+        return
+    last_weld_time = now
     print_both("PEDAL: trigger weld (both)")
     t0_us = time.ticks_us()
     do_weld_ms(PULSE_MS)
@@ -901,9 +908,11 @@ BUTTON_DEBOUNCE_MS = 30
 PEDAL_PIN = 7
 pedal = Pin(PEDAL_PIN, Pin.IN, Pin.PULL_UP)
 PEDAL_DEBOUNCE_MS = 25
+WELD_DEBOUNCE_MS = 500  # Minimum time between welds (ms)
 WELD_LOCKOUT_MS = 300
 next_weld_ok_at = 0
 last_pedal_change = 0
+last_weld_time = 0
 pedal_state = 1  # 1=idle, 0=pressed
 
 # ---- Persistent weld pulse (used by pedal and can be set over ASCII) ----
@@ -1368,7 +1377,12 @@ def do_weld_ms(pulse_ms):
 
 
 def trigger_weld():
-    global PULSE_MS
+    global PULSE_MS, last_weld_time
+    now = time.ticks_ms()
+    if time.ticks_diff(now, last_weld_time) < WELD_DEBOUNCE_MS:
+        print_both("PEDAL: ignored (weld debounce)")
+        return
+    last_weld_time = now
     print_both("PEDAL: trigger weld (both)")
     t0_us = time.ticks_us()
     do_weld_ms(PULSE_MS)
