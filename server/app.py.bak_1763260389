@@ -128,6 +128,8 @@ def on_esp_log(msg):
                     esp_status["state"] = "IDLE"
 
         threading.Thread(target=reset_state, daemon=True).start()
+    else:
+        log(msg)  # Log all other ESP32 messages
 
 
 def load_settings():
@@ -309,21 +311,18 @@ def save_settings_route():
     """Save settings"""
     data = request.get_json()
     save_settings(data)
-    
-    # Send to ESP32
-    if esp_link and esp_link.connected:
-        mode = data.get('mode', 1)
-        d1 = data.get('d1', 50)
-        gap1 = data.get('gap1', 0)
-        d2 = data.get('d2', 0)
-        gap2 = data.get('gap2', 0)
-        d3 = data.get('d3', 0)
-        
-        cmd = f"SET,mode={mode},d1={d1},gap1={gap1},d2={d2},gap2={gap2},d3={d3}"
-        esp_link.send_command(cmd)
-    
-    return jsonify({"status": "ok"})
 
+    # Send to ESP32
+    log(f"DEBUG: esp_link={esp_link}, connected={esp_link.connected if esp_link else 'N/A'}")
+    if esp_link and esp_link.connected:
+        d1 = data.get('d1', 50)
+        cmd = f"SET_PULSE,{d1}"
+        log(f"DEBUG: Sending command: {cmd}")
+        esp_link.send_command(cmd)
+    else:
+        log("⚠️ ESP32 not connected - cannot send SET_PULSE")
+
+    return jsonify({"status": "ok"})
 @app.route('/api/get_presets')
 def get_presets_route():
     """Get all presets"""
