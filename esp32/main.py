@@ -745,6 +745,7 @@ def cmd_handle(line):
                 print_both("ERR,NOFIRE,%s" % reason)
                 return
 
+            print_both("FIRING,%d" % ms)
             t0_us = time.ticks_us()
             do_weld_ms(ms)
             t1_us = time.ticks_us()
