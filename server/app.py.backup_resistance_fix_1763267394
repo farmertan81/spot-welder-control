@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-
-# Weld cooldown protection
-WELD_COOLDOWN_MS = 3000  # 3 seconds minimum between welds
-last_weld_time = 0
-
 """
 Spot Welder Control Server
 Flask + SocketIO + ESP32 + ADS1256 + Weld Capture
@@ -197,7 +192,7 @@ def save_presets(data):
 
 def calculate_energy(weld_data):
     """Calculate energy delivered in Joules using I²R integration (only during actual weld)"""
-    TOTAL_RESISTANCE_OHM = 0.00296  # 3.49 mΩ total circuit resistance
+    TOTAL_RESISTANCE_OHM = 0.00349  # 3.49 mΩ total circuit resistance
     CURRENT_THRESHOLD = 100.0  # Only count energy when current > 100A
     energy = 0.0
     timestamps = weld_data["timestamps"]
@@ -461,21 +456,7 @@ def status_broadcast_thread():
             log("🔥 Weld started - capturing data")
             with weld_lock:
                 is_capturing = True
-                # Find first high-current sample in pre-trigger buffer (>100A = weld started)
-                TRIGGER_THRESHOLD = 100.0  # Amps
-                first_high_current_time = None
-                for sample in pre_trigger_buffer:
-                    if abs(sample["i"]) > TRIGGER_THRESHOLD:
-                        first_high_current_time = sample["t"]
-                        break
-                
-                # Use first high-current sample as t=0, or current time if none found
-                if first_high_current_time is not None:
-                    weld_start_time = first_high_current_time
-                    log(f"⚡ Trigger detected at first high-current sample ({TRIGGER_THRESHOLD}A threshold)")
-                else:
-                    weld_start_time = time.time()
-                    log(f"⚠️ No high-current pre-trigger found, using current time as t=0")
+                weld_start_time = time.time()
                 
                 # Initialize weld data with pre-trigger samples
                 current_weld_data = {"voltage": [], "current": [], "timestamps": []}
