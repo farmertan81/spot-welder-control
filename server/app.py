@@ -201,9 +201,17 @@ def load_settings():
 
 def save_settings(data):
     """Save settings to JSON"""
+    # Load existing settings to preserve fields like weld_counter
+    settings = load_settings()
+    
+    # Update with new data
+    settings.update(data)
+    
+    # Save back
     with open(SETTINGS_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
-    log(f"Settings saved: mode={data.get('mode')}, d1={data.get('d1')}")
+        json.dump(settings, f, indent=2)
+    
+    log(f"Settings saved: mode={settings.get('mode')}, d1={settings.get('d1')}, active_preset={settings.get('active_preset', 'N/A')}")
 
 def load_presets():
     """Load presets from JSON"""
