@@ -237,17 +237,19 @@ def uart_try_read_line():
 
 def print_both(s: str):
     global uart
-    print("[PRINT_BOTH]", s[:50])  # Debug
+    print("[PRINT_BOTH]", s[:80])  # Debug
     # Mirror prints to USB console and UART1
     try:
         print(s)
-    except Exception:
-        pass
+    except Exception as e:
+        print("ERR: print() failed:", e)
     try:
         if uart:
             uart.write((s + "\n").encode())
-    except Exception:
-        pass
+        else:
+            print("ERR: uart is None!")
+    except Exception as e:
+        print("ERR: uart.write() failed:", e)
 
 # ---- Thermistor reading ----
 def read_thermistor_temp():
@@ -545,6 +547,10 @@ def do_weld_ms(pulse_ms):
     # Stream voltage and current during weld
     t_start_us = time.ticks_us()
     t_start_ms = time.ticks_ms()
+    # Start ADS1256 continuous mode for fast sampling
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.start_continuous()
+
     FET_WELD1.on(); FET_WELD2.on()
 
     # Fast sampling during weld
@@ -564,13 +570,11 @@ def do_weld_ms(pulse_ms):
             v_end = v
             
             # Read current from ADS1256 (if DRDY ready)
-            print("DBG: Checking ADS1256...")
             current = None
             if ADS1256_AVAILABLE and adc_current:
                 try:
-                    current = adc_current.read_current()
+                    current = adc_current.read_current_fast()
                     weld_samples.append((t_us, v, current))
-                    print("DBG: Got current = %.1f A" % current)
                 except:
                     pass
             
@@ -579,11 +583,14 @@ def do_weld_ms(pulse_ms):
                 msg = "WDATA,%.3f,%.1f,%d" % (v, current, t_us)
             else:
                 msg = "VDATA,%.3f,%d" % (v, t_us)
-            print("DBG: About to call print_both with:", msg)
             print_both(msg)
             sample_count += 1
 
     FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
     t_actual_us = time.ticks_diff(time.ticks_us(), t_start_us)
 
     # Calculate statistics
@@ -635,6 +642,10 @@ def shutdown_procedure():
     print_both("Long‑press detected — shutting down charger...")
     led_red()
     FET_CHARGE.off(); FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
     time.sleep(0.5)
     led_off()
     print_both("Entering deep sleep. Press power button to wake.")
@@ -757,6 +768,10 @@ def cmd_handle(line):
         if up == "DISABLE":
             system_enabled = False
             FET_CHARGE.off(); FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
             print_both("OK,DISABLED")
             return
 
@@ -859,6 +874,10 @@ def cmd_handle(line):
 
         if up == "ABORT":
             FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
             print_both("OK,ABORTED")
             return
 
@@ -894,6 +913,10 @@ try:
                     system_enabled = not system_enabled
                     if not system_enabled:
                         FET_CHARGE.off(); FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
                         led_orange()
                         print_both("System DISABLED (short press) — all FETs OFF")
                         next_weld_ok_at = time.ticks_add(t_now, WELD_LOCKOUT_MS)
@@ -1437,6 +1460,10 @@ def shutdown_procedure():
     print_both("Long‑press detected — shutting down charger...")
     led_red()
     FET_CHARGE.off(); FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
     time.sleep(0.5)
     led_off()
     print_both("Entering deep sleep. Press power button to wake.")
@@ -1559,6 +1586,10 @@ def cmd_handle(line):
         if up == "DISABLE":
             system_enabled = False
             FET_CHARGE.off(); FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
             print_both("OK,DISABLED")
             return
 
@@ -1639,6 +1670,10 @@ def cmd_handle(line):
 
         if up == "ABORT":
             FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
             print_both("OK,ABORTED")
             return
 
@@ -1675,6 +1710,10 @@ try:
                     system_enabled = not system_enabled
                     if not system_enabled:
                         FET_CHARGE.off(); FET_WELD1.off(); FET_WELD2.off()
+    
+    # Stop ADS1256 continuous mode
+    if ADS1256_AVAILABLE and adc_current:
+        adc_current.stop_continuous()
                         led_orange()
                         print_both("System DISABLED (short press) — all FETs OFF")
                         next_weld_ok_at = time.ticks_add(t_now, WELD_LOCKOUT_MS)

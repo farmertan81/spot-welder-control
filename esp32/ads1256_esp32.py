@@ -171,6 +171,49 @@ class ADS1256:
             return None
         return v - self.offset_voltage
     
+    def start_continuous(self):
+        """Start continuous conversion mode"""
+        self.cs.value(0)
+        self.spi.write(bytes([CMD_RDATAC]))
+        self.cs.value(1)
+        time.sleep_us(10)
+
+    def stop_continuous(self):
+        """Stop continuous conversion mode"""
+        self.cs.value(0)
+        self.spi.write(bytes([CMD_SDATAC]))
+        self.cs.value(1)
+        time.sleep_us(10)
+
+    def read_counts_fast(self):
+        """Read 24-bit value in continuous mode (no DRDY wait, non-blocking)"""
+        # Check if data is ready (non-blocking)
+        if self.drdy.value() == 1:
+            return None  # Not ready yet
+
+        # Data is ready, read it immediately
+        self.cs.value(0)
+        data = self.spi.read(3)
+        self.cs.value(1)
+
+        # Convert 24-bit two's complement to signed integer
+        raw = (data[0] << 16) | (data[1] << 8) | data[2]
+        if raw & 0x800000:
+            raw -= 0x1000000
+
+        return raw
+
+    def read_current_fast(self):
+        """Read current in continuous mode (non-blocking)"""
+        counts = self.read_counts_fast()
+        if counts is None:
+            return None
+
+        voltage = counts * self.volts_per_code
+        voltage_corrected = voltage - self.offset_voltage
+        current = -voltage_corrected / self.Rsh
+        return current
+
     def read_current(self):
         """Read current in Amps: I = V / Rsh"""
         v = self.read_voltage()
