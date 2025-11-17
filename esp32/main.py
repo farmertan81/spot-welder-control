@@ -15,6 +15,29 @@ import time, struct, neopixel
 import machine, esp32
 import math, sys, select
 
+# ---- WiFi & FTP Setup ----
+try:
+    from wifi_config import WIFI_SSID, WIFI_PASSWORD
+    from wifi_manager import connect_wifi, start_ftp_server
+    
+    print("\n" + "="*50)
+    print("  WiFi Initialization")
+    print("="*50)
+    
+    wifi_ip = connect_wifi(WIFI_SSID, WIFI_PASSWORD, timeout=15)
+    if wifi_ip:
+        print(f"✓ WiFi connected: {wifi_ip}")
+        if start_ftp_server():
+            print(f"✓ FTP server running")
+            print(f"  Connect: ftp://{wifi_ip}")
+            print(f"  User: esp32 / Pass: welder123")
+    else:
+        print("✗ WiFi connection failed - continuing without network")
+    print("="*50 + "\n")
+except Exception as e:
+    print(f"WiFi setup error: {e}")
+    print("Continuing without WiFi...\n")
+
 # ---- DEBUG TOGGLE ----
 DEBUG = True  # Set False to quiet detailed telemetry
 
@@ -22,8 +45,6 @@ def dbg(msg: str):
     if DEBUG:
         print_both("DBG " + msg)
 
-# ---- PINS ----
-I2C_SDA = 3
 I2C_SCL = 2
 INA_ADDR = 0x40  # Charger INA226 (pack shunt + Vpack)
 
