@@ -232,6 +232,7 @@ def uart_try_read_line():
             try:
                 return line.decode('utf-8').strip()
             except:
+                return ''
     except Exception:
         pass
     return None
