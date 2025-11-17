@@ -98,7 +98,23 @@ TEMP_EMA_ALPHA = 0.05  # Lower = smoother (0.05-0.2 typical)
 TEMP_OUTLIER_THRESHOLD = 5.0  # Reject readings >5°C from current
 temp_ema = None
 temp_last_valid = None
-# ---- ADS1256 Current Sensor ----weld_samples = []MAX_WELD_SAMPLES = 1000if ADS1256_AVAILABLE:    try:        spi_ads = SPI(1, baudrate=1000000, polarity=0, phase=1,                      sck=Pin(40), mosi=Pin(39), miso=Pin(38))        adc_current = ads1256_esp32.ADS1256(spi_ads, cs_pin=17, drdy_pin=18)        print("✓ ADS1256 current sensor initialized")    except Exception as e:        print(f"ADS1256 init failed: {e}")        ADS1256_AVAILABLE = False        adc_current = Noneelse:    adc_current = None
+
+# ---- ADS1256 Current Sensor ----
+weld_samples = []
+MAX_WELD_SAMPLES = 1000
+
+if ADS1256_AVAILABLE:
+    try:
+        spi_ads = SPI(1, baudrate=1000000, polarity=0, phase=1,
+                      sck=Pin(40), mosi=Pin(39), miso=Pin(38))
+        adc_current = ads1256_esp32.ADS1256(spi_ads, cs_pin=17, drdy_pin=18)
+        print("✓ ADS1256 current sensor initialized")
+    except Exception as e:
+        print(f"ADS1256 init failed: {e}")
+        ADS1256_AVAILABLE = False
+        adc_current = None
+else:
+    adc_current = None
 
 # System enable latch (short-press toggle)
 system_enabled = True
