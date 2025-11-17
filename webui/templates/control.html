@@ -487,7 +487,8 @@
                 gap1: parseInt(document.getElementById('gap1').value),
                 d2: parseInt(document.getElementById('d2').value),
                 gap2: parseInt(document.getElementById('gap2').value),
-                d3: parseInt(document.getElementById('d3').value)
+                d3: parseInt(document.getElementById('d3').value),
+                active_preset: currentPreset
             };
             
             const resp = await fetch('/api/save_settings', {
@@ -587,8 +588,5 @@
         loadPresets();
     </script>
 
-// Listen for weld counter updates
-    }
-});
 </body>
 </html>
