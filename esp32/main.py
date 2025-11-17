@@ -99,6 +99,7 @@ BETA = 3950
 TEMP_EMA_ALPHA = 0.05  # Lower = smoother (0.05-0.2 typical)
 TEMP_OUTLIER_THRESHOLD = 5.0  # Reject readings >5°C from current
 temp_ema = None
+temp_last_valid = None
 
 # System enable latch (short-press toggle)
 system_enabled = True
