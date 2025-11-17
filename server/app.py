@@ -407,7 +407,8 @@ def save_settings_route():
 def get_presets_route():
     """Get all presets"""
     presets = load_presets()
-    return jsonify({"status": "ok", "presets": presets})
+    settings = load_settings()
+    return jsonify({"status": "ok", "presets": presets, "active_preset": settings.get("active_preset", "P1")})
 
 @app.route('/api/save_preset', methods=['POST'])
 def save_preset_route():
