@@ -203,8 +203,6 @@ if ADS1256_AVAILABLE:
 else:
     adc_current = None
     print("ADS1256 driver not available")
-    print("UART init failed:", e)
-    uart = None
 
 # ---- UART line reader (robust) ----
 _uart_buf = b""
@@ -239,6 +237,7 @@ def uart_try_read_line():
 
 def print_both(s: str):
     global uart
+    print("[PRINT_BOTH]", s[:50])  # Debug
     # Mirror prints to USB console and UART1
     try:
         print(s)
@@ -580,6 +579,7 @@ def do_weld_ms(pulse_ms):
                 msg = "WDATA,%.3f,%.1f,%d" % (v, current, t_us)
             else:
                 msg = "VDATA,%.3f,%d" % (v, t_us)
+            print("DBG: About to call print_both with:", msg)
             print_both(msg)
             sample_count += 1
 
@@ -1113,22 +1113,6 @@ if not SAFE_MODE:
 UART_TX_PIN = 12  # ESP TX -> Pi RXD0 (GPIO15)
 UART_RX_PIN = 13  # ESP RX -> Pi TXD0 (GPIO14)
 
-uart = None
-try:
-    uart = UART(1, 115200)
-    uart.init(115200, bits=8, parity=None, stop=1, tx=Pin(UART_TX_PIN), rx=Pin(UART_RX_PIN))
-    time.sleep(0.05)
-    # Test burst
-    if uart:
-        for i in range(10):
-            uart.write(b"HELLO_PI\n")
-            time.sleep(0.2)
-    print("UART1 ready @115200 on GPIO12/13")
-except Exception as e:
-    print("UART init failed:", e)
-    uart = None
-
-# ---- UART line reader (robust) ----
 _uart_buf = b""
 def uart_try_read_line():
     global _uart_buf
@@ -1159,20 +1143,6 @@ def uart_try_read_line():
         pass
     return None
 
-def print_both(s: str):
-    global uart
-    # Mirror prints to USB console and UART1
-    try:
-        print(s)
-    except Exception:
-        pass
-    try:
-        if uart:
-            uart.write((s + "\n").encode())
-    except Exception:
-        pass
-
-# ---- Thermistor reading ----
 def read_thermistor_temp():
     global temp_ema, temp_last_valid
     try:
@@ -1475,6 +1445,7 @@ def do_weld_ms(pulse_ms):
             v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
             t_us = time.ticks_diff(time.ticks_us(), t_start_us)
             msg = "VDATA,%.3f,%d" % (v, t_us)
+            print("DBG: About to call print_both with:", msg)
             print_both(msg)  # Send to UART
             sample_count += 1
     
