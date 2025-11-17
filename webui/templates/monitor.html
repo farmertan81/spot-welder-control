@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Weld Monitor</title>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+
     <style>
         * {
             margin: 0;
@@ -182,10 +186,13 @@
     <div class="container">
         <header>
             <h1>📊 Weld Monitor</h1>
-            <div class="nav-links">
-                <a href="/control">Control</a>
-                <a href="/monitor">Monitor</a>
-                <a href="/logs">Logs</a>
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div class="nav-links">
+                    <a href="/control">Control</a>
+                    <a href="/monitor">Monitor</a>
+                    <a href="/logs">Logs</a>
+                </div>
+                <button id="clear-weld-data-btn" style="background: #dc3545; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: bold; transition: background 0.3s;">Clear Weld Data</button>
             </div>
         </header>
         
@@ -589,15 +596,27 @@ function autoZoomChart(chart) {
                 document.getElementById('duration').textContent = weld.duration_ms.toFixed(1) + ' ms';
                 document.getElementById('weld-num').textContent = weld.weld_number;
                 
-                // Update chart
-                chart.data.datasets[0].data = weld.data.timestamps.map((t, i) => ({
-                    x: t * 1000,
-                    y: weld.data.current[i]
-                }));
-                chart.data.datasets[1].data = weld.data.timestamps.map((t, i) => ({
-                    x: t * 1000,
-                    y: weld.data.voltage[i]
-                }));
+                // Update chart - handle both data formats
+                let currentData, voltageData;
+                
+                if (Array.isArray(weld.data) && weld.data.length > 0 && 't' in weld.data[0]) {
+                    // New format: [{t: ..., v: ..., i: ...}, ...]
+                    currentData = weld.data.map(d => ({ x: d.t, y: d.i }));
+                    voltageData = weld.data.map(d => ({ x: d.t, y: d.v }));
+                } else {
+                    // Old format: {timestamps: [...], current: [...], voltage: [...]}
+                    currentData = weld.data.timestamps.map((t, i) => ({
+                        x: t * 1000,
+                        y: weld.data.current[i]
+                    }));
+                    voltageData = weld.data.timestamps.map((t, i) => ({
+                        x: t * 1000,
+                        y: weld.data.voltage[i]
+                    }));
+                }
+                
+                chart.data.datasets[0].data = currentData;
+                chart.data.datasets[1].data = voltageData;
                 // Apply smoothing
                 chart.data.datasets[0].data = smoothData(chart.data.datasets[0].data, 3);
                 // Auto-zoom to relevant data
@@ -619,6 +638,24 @@ function autoZoomChart(chart) {
         
         // Initialize
         loadWeldHistory();
+        // Clear Weld Data button
+        document.getElementById('clear-weld-data-btn').addEventListener('click', function() {
+            if (confirm('Clear all weld data and reset counter?')) {
+                socket.emit('clear_weld_data');
+            }
+        });
+
+        // Listen for clear confirmation from server
+        socket.on('weld_data_cleared', function() {
+            const container = document.getElementById('weld-history');
+            if (container) {
+                container.innerHTML = '<p style="color: #666;">No welds yet...</p>';
+            }
+            console.log('✅ Weld data cleared');
+        });
+
     </script>
+
+
 </body>
 </html>
