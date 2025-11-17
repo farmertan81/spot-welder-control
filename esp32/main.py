@@ -233,7 +233,6 @@ def uart_try_read_line():
                 return line.decode('utf-8').strip()
             except:
                     print("DBG: ADS1256 read failed!")
-                return ''.join(chr(b) for b in line if 32 <= b < 127).strip()
     except Exception:
         pass
     return None
