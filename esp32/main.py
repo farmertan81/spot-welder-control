@@ -11,15 +11,6 @@
 # ====
 
 from machine import Pin, SoftI2C, deepsleep, UART, ADC
-
-# ---- ADS1256 Current Sensor Import ----
-try:
-    import ads1256_esp32
-    from machine import SPI
-    ADS1256_AVAILABLE = True
-except:
-    ADS1256_AVAILABLE = False
-    print("ADS1256 driver not found - current measurement disabled")
 import time, struct, neopixel
 import machine, esp32
 import math, sys, select
@@ -106,23 +97,6 @@ button_pressed_ms = 0
 button_debounce_ms = 0
 long_press_fired = False
 
-
-# ---- ADS1256 Current Sensor ----
-if ADS1256_AVAILABLE:
-    try:
-        spi_ads = SPI(1, baudrate=1000000, polarity=0, phase=1,
-                      sck=Pin(40), mosi=Pin(39), miso=Pin(38))
-        adc_current = ads1256_esp32.ADS1256(spi_ads, cs_pin=17, drdy_pin=18)
-        print("✓ ADS1256 current sensor initialized")
-    except Exception as e:
-        print(f"ADS1256 init failed: {e}")
-        ADS1256_AVAILABLE = False
-        adc_current = None
-else:
-    adc_current = None
-
-weld_samples = []
-MAX_WELD_SAMPLES = 1000
 LED_PIN = 21
 led = neopixel.NeoPixel(Pin(LED_PIN), 1)
 
@@ -516,6 +490,96 @@ def weld_safe_to_fire(v_pack_now):
         print_both("WARN: FIRE ignored — charge FET ON")
         return False, "CHG_ON"
     return True, "OK"
+
+def do_weld_ms(pulse_ms):
+    global next_weld_ok_at, weld_samples
+    if pulse_ms < 1: pulse_ms = 1
+    if pulse_ms > 5000: pulse_ms = 5000
+    try:
+        prev = led[0]
+    except Exception:
+        prev = (0,0,0)
+    led_red()
+
+    # Turn OFF charger FET during weld (critical!)
+    FET_CHARGE.off()
+    time.sleep(0.001)
+
+    # Clear sample buffer
+    weld_samples = []
+    
+    # Stream voltage and current during weld
+    t_start_us = time.ticks_us()
+    t_start_ms = time.ticks_ms()
+    FET_WELD1.on(); FET_WELD2.on()
+
+    # Fast sampling during weld
+    sample_count = 0
+    v_start = None
+    v_end = None
+    
+    while time.ticks_diff(time.ticks_ms(), t_start_ms) < pulse_ms:
+        t_us = time.ticks_diff(time.ticks_us(), t_start_us)
+        
+        # Read voltage
+        raw = i2c_read_u16(REG_BUS_VOLT)
+        if raw is not None:
+            v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
+            if v_start is None:
+                v_start = v
+            v_end = v
+            
+            # Read current from ADS1256 (if DRDY ready)
+            current = None
+            if ADS1256_AVAILABLE and adc_current and adc_current.drdy.value() == 0:
+                try:
+                    current = adc_current.read_current()
+                    weld_samples.append((t_us, v, current))
+                except:
+                    pass
+            
+            # Send data to UART
+            if current is not None:
+                msg = "WDATA,%.3f,%.1f,%d" % (v, current, t_us)
+            else:
+                msg = "VDATA,%.3f,%d" % (v, t_us)
+            print(msg)
+            sample_count += 1
+
+    FET_WELD1.off(); FET_WELD2.off()
+    t_actual_us = time.ticks_diff(time.ticks_us(), t_start_us)
+
+    # Calculate statistics
+    peak_current = 0.0
+    energy_j = 0.0
+    
+    if len(weld_samples) > 1:
+        for _, _, i in weld_samples:
+            if i is not None and abs(i) > abs(peak_current):
+                peak_current = i
+        
+        R_total = 0.010
+        for idx in range(len(weld_samples) - 1):
+            t1, v1, i1 = weld_samples[idx]
+            t2, v2, i2 = weld_samples[idx + 1]
+            if i1 is not None and i2 is not None:
+                dt = (t2 - t1) / 1e6
+                p_avg = ((i1**2 + i2**2) / 2.0) * R_total
+                energy_j += p_avg * dt
+    
+    v_drop = 0.0
+    if v_start is not None and v_end is not None:
+        v_drop = v_start - v_end
+
+    print("WDATA_END,%d,%d,%.1f,%.2f,%.3f" % (sample_count, t_actual_us, peak_current, energy_j, v_drop))
+
+    try:
+        led[0] = prev
+        led.write()
+    except Exception:
+        pass
+
+    next_weld_ok_at = time.ticks_add(time.ticks_ms(), WELD_LOCKOUT_MS)
 
 def trigger_weld():
     global PULSE_MS, last_weld_time
