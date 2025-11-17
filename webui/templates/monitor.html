@@ -652,6 +652,11 @@ function autoZoomChart(chart) {
                 container.innerHTML = '<p style="color: #666;">No welds yet...</p>';
             }
             console.log('✅ Weld data cleared');
+            
+            // Reload page to refresh everything
+            setTimeout(function() {
+                location.reload();
+            }, 500);
         });
 
     </script>

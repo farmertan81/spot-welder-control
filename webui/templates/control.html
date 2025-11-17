@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Welder Control</title>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+// Listen for weld counter updates
+socket.on('weld_counter_update', function(data) {
+    const counterElem = document.getElementById('weld-counter');
+    if (counterElem) {
+        counterElem.textContent = data.count;
+    }
+});
     <style>
         * {
             margin: 0;
@@ -585,5 +593,13 @@
         loadSettings();
         loadPresets();
     </script>
+
+// Listen for weld counter updates
+socket.on('weld_counter_update', function(data) {
+    const counterElem = document.getElementById('weld-counter');
+    if (counterElem) {
+        counterElem.textContent = data.count;
+    }
+});
 </body>
 </html>
