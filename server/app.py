@@ -113,14 +113,15 @@ def on_esp_log(msg):
     if "trigger weld" in msg:
         log(msg)
         global is_capturing, weld_start_time, current_weld_data
-        with status_lock:
-            esp_status["state"] = "FIRING"
         # Start capturing immediately!
         with weld_lock:
             is_capturing = True
             weld_start_time = time.time()
             current_weld_data = []
             log("🔥 Weld capture started immediately on PEDAL")
+        # Set state AFTER is_capturing to prevent race condition
+        with status_lock:
+            esp_status["state"] = "FIRING"
 
     # Check for FIRED message (end capture)
     # Check for WDATA message (weld current data)
