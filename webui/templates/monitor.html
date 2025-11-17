@@ -647,16 +647,10 @@ function autoZoomChart(chart) {
 
         // Listen for clear confirmation from server
         socket.on('weld_data_cleared', function() {
-            const container = document.getElementById('weld-history');
-            if (container) {
-                container.innerHTML = '<p style="color: #666;">No welds yet...</p>';
-            }
-            console.log('✅ Weld data cleared');
+            console.log('✅ Weld data cleared - forcing reload...');
             
-            // Reload page to refresh everything
-            setTimeout(function() {
-                location.reload();
-            }, 500);
+            // Force reload (bypass cache)
+            window.location.href = window.location.href;
         });
 
     </script>
