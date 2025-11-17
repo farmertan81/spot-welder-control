@@ -1,3 +1,18 @@
+# Backup files
+*.backup
+*.backup.*
+*.backup_*
+
+# Python cache
 __pycache__/
+*.pyc
+*.pyo
+
+# Weld history (runtime data)
+weld_history/*.json
+
+# Settings (contains runtime state)
+server/settings.json
+
+# Logs
 *.log
-.env
