@@ -11,6 +11,15 @@
 # ====
 
 from machine import Pin, SoftI2C, deepsleep, UART, ADC
+
+# ---- ADS1256 Current Sensor Import ----
+try:
+    import ads1256_esp32
+    from machine import SPI
+    ADS1256_AVAILABLE = True
+except:
+    ADS1256_AVAILABLE = False
+    print("ADS1256 driver not found - current measurement disabled")
 import time, struct, neopixel
 import machine, esp32
 import math, sys, select
@@ -97,6 +106,23 @@ button_pressed_ms = 0
 button_debounce_ms = 0
 long_press_fired = False
 
+
+# ---- ADS1256 Current Sensor ----
+if ADS1256_AVAILABLE:
+    try:
+        spi_ads = SPI(1, baudrate=1000000, polarity=0, phase=1,
+                      sck=Pin(40), mosi=Pin(39), miso=Pin(38))
+        adc_current = ads1256_esp32.ADS1256(spi_ads, cs_pin=17, drdy_pin=18)
+        print("✓ ADS1256 current sensor initialized")
+    except Exception as e:
+        print(f"ADS1256 init failed: {e}")
+        ADS1256_AVAILABLE = False
+        adc_current = None
+else:
+    adc_current = None
+
+weld_samples = []
+MAX_WELD_SAMPLES = 1000
 LED_PIN = 21
 led = neopixel.NeoPixel(Pin(LED_PIN), 1)
 
@@ -490,49 +516,6 @@ def weld_safe_to_fire(v_pack_now):
         print_both("WARN: FIRE ignored — charge FET ON")
         return False, "CHG_ON"
     return True, "OK"
-
-def do_weld_ms(pulse_ms):
-    global next_weld_ok_at
-    if pulse_ms < 1: pulse_ms = 1
-    if pulse_ms > 5000: pulse_ms = 5000
-    try:
-        prev = led[0]
-    except Exception:
-        prev = (0,0,0)
-    led_red()
-    
-    # Turn OFF charger FET during weld (critical!)
-    FET_CHARGE.off()
-    time.sleep(0.001)  # Brief delay to ensure FET is off
-    
-    # Stream voltage during weld
-    t_start_us = time.ticks_us()
-    t_start_ms = time.ticks_ms()
-    FET_WELD1.on(); FET_WELD2.on()
-    
-    # Fast voltage sampling during weld
-    sample_count = 0
-    while time.ticks_diff(time.ticks_ms(), t_start_ms) < pulse_ms:
-        raw = i2c_read_u16(REG_BUS_VOLT)
-        if raw is not None:
-            v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
-            t_us = time.ticks_diff(time.ticks_us(), t_start_us)
-            msg = "VDATA,%.3f,%d" % (v, t_us)
-            print(msg)  # Send to UART
-            sample_count += 1
-    
-    FET_WELD1.off(); FET_WELD2.off()
-    t_actual_us = time.ticks_diff(time.ticks_us(), t_start_us)
-    
-    # Send summary
-    print("VDATA_END,%d,%d" % (sample_count, t_actual_us))
-    
-    try:
-        led[0] = prev; led.write()
-    except Exception:
-        pass
-    next_weld_ok_at = time.ticks_add(time.ticks_ms(), WELD_LOCKOUT_MS)
-
 
 def trigger_weld():
     global PULSE_MS, last_weld_time
