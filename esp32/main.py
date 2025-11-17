@@ -12,15 +12,16 @@
 
 from machine import Pin, SoftI2C, deepsleep, UART, ADC
 
-print("DEBUG: About to import ADS1256...")
 # ---- ADS1256 Current Sensor Import ----
+ADS1256_AVAILABLE = False
 try:
     import ads1256_esp32
     from machine import SPI
     ADS1256_AVAILABLE = True
-except:
+    print("✓ ADS1256 driver imported")
+except Exception as e:
+    print(f"ADS1256 import failed: {e}")
     ADS1256_AVAILABLE = False
-    print("ADS1256 driver not found - current measurement disabled")
 import time, struct, neopixel
 import machine, esp32
 import math, sys, select
