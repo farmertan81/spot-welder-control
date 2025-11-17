@@ -1,5 +1,6 @@
 # ADS1256 Driver for ESP32 MicroPython
-# 24-bit ADC with SPI interface and DRDY interrupt
+# Ported from working Pi driver
+# Differential AIN2-AIN3 for AMC1311B current sense
 
 from machine import Pin, SPI
 import time
@@ -28,39 +29,36 @@ DRATE_7500SPS  = 0xD0
 DRATE_3750SPS  = 0xC0
 DRATE_2000SPS  = 0xB0
 DRATE_1000SPS  = 0xA1
-DRATE_500SPS   = 0x92
-DRATE_100SPS   = 0x82
-DRATE_60SPS    = 0x72
-DRATE_50SPS    = 0x63
-DRATE_30SPS    = 0x53
-DRATE_25SPS    = 0x43
-DRATE_15SPS    = 0x33
-DRATE_10SPS    = 0x23
-DRATE_5SPS     = 0x13
-DRATE_2_5SPS   = 0x03
 
-# PGA Gain settings
-PGA_GAIN_1  = 0x00
-PGA_GAIN_2  = 0x01
-PGA_GAIN_4  = 0x02
-PGA_GAIN_8  = 0x03
-PGA_GAIN_16 = 0x04
-PGA_GAIN_32 = 0x05
-PGA_GAIN_64 = 0x06
+# MUX settings
+MUX_AIN2_AIN3 = 0x23  # P=AIN2, N=AIN3 (your shunt via AMC1311)
 
 class ADS1256:
     def __init__(self, spi, cs_pin, drdy_pin):
         self.spi = spi
         self.cs = Pin(cs_pin, Pin.OUT, value=1)
-        self.drdy = Pin(drdy_pin, Pin.IN)
+        self.drdy = Pin(drdy_pin, Pin.IN, Pin.PULL_UP)
         
-        self.vref = 2.5  # Reference voltage
-        self.gain = 1
+        # Scaling constants (from your Pi driver)
+        self.Vref = 2.5  # Internal reference
+        self.gain_adc = 1.0  # PGA gain
+        self.FS = 8388607.0  # 24-bit signed max
+        self.Rsh = 50e-6  # 50 µΩ shunt
+        self.G_AMC = 1.0  # AMC1311B gain
+        
+        # Voltage per code
+        self.volts_per_code = (2 * self.Vref) / (self.FS * 2 * self.gain_adc)
+        
+        self.offset_voltage = 0.0  # Baseline at zero current
+        self.initialized = False
+        
+        print(f"ADS1256: Volts per code = {self.volts_per_code:.9e}")
+        print(f"ADS1256: Shunt = {self.Rsh*1e6:.1f} µΩ")
         
         # Initialize
         time.sleep_ms(100)
         self.reset()
-        self.wait_drdy()
+        self.configure()
         
     def wait_drdy(self, timeout_ms=1000):
         """Wait for DRDY to go low (data ready)"""
@@ -77,43 +75,69 @@ class ADS1256:
         self.cs.value(1)
         time.sleep_ms(100)
         
+        # Stop continuous mode
+        self.cs.value(0)
+        self.spi.write(bytes([CMD_SDATAC]))
+        self.cs.value(1)
+        time.sleep_ms(1)
+        
     def write_reg(self, reg, value):
         """Write to a register"""
         self.cs.value(0)
-        self.spi.write(bytes([CMD_WREG | reg, 0x00, value]))
+        self.spi.write(bytes([CMD_WREG | (reg & 0x0F), 0x00, value & 0xFF]))
         self.cs.value(1)
+        time.sleep_ms(1)
         
     def read_reg(self, reg):
         """Read from a register"""
         self.cs.value(0)
-        self.spi.write(bytes([CMD_RREG | reg, 0x00]))
+        self.spi.write(bytes([CMD_RREG | (reg & 0x0F), 0x00]))
         result = self.spi.read(1)
         self.cs.value(1)
         return result[0]
     
-    def set_channel(self, pos_ch, neg_ch=0x08):
-        """Set input channel (neg_ch=0x08 for AINCOM)"""
-        mux = (pos_ch << 4) | neg_ch
-        self.write_reg(REG_MUX, mux)
+    def configure(self):
+        """Configure ADS1256 with proven Pi settings"""
+        # STATUS: Auto-cal off, buffer enabled, order MSB
+        self.write_reg(REG_STATUS, 0x06)
         
-    def set_data_rate(self, drate):
-        """Set data rate"""
-        self.write_reg(REG_DRATE, drate)
+        # MUX: AIN2-AIN3 differential (your shunt)
+        self.write_reg(REG_MUX, MUX_AIN2_AIN3)
         
-    def set_pga_gain(self, gain):
-        """Set PGA gain (0-6 for 1x to 64x)"""
-        self.gain = 1 << gain
-        self.write_reg(REG_ADCON, 0x20 | gain)  # 0x20 = CLKOUT off, sensor detect off
+        # ADCON: PGA=1, CLK=internal
+        self.write_reg(REG_ADCON, 0x00)
         
-    def calibrate(self):
-        """Perform self-calibration"""
+        # DRATE: 30 kSPS for fast weld capture
+        self.write_reg(REG_DRATE, DRATE_30000SPS)
+        
+        # Perform self-calibration
+        print("ADS1256: Calibrating...")
         self.cs.value(0)
         self.spi.write(bytes([CMD_SELFCAL]))
         self.cs.value(1)
         self.wait_drdy(timeout_ms=2000)
+        print("ADS1256: Calibration done")
         
-    def read_raw(self):
-        """Read 24-bit raw ADC value"""
+        # Measure offset
+        self.measure_offset()
+        
+        self.initialized = True
+        
+    def measure_offset(self, samples=50):
+        """Measure baseline voltage offset at zero current"""
+        print("ADS1256: Measuring offset...")
+        voltages = []
+        for _ in range(samples):
+            v = self.read_voltage_raw()
+            if v is not None:
+                voltages.append(v)
+        
+        if voltages:
+            self.offset_voltage = sum(voltages) / len(voltages)
+            print(f"ADS1256: Offset = {self.offset_voltage:.6f} V")
+        
+    def read_counts(self):
+        """Read 24-bit signed ADC value"""
         if not self.wait_drdy():
             return None
             
@@ -131,14 +155,28 @@ class ADS1256:
         
         return raw
     
-    def read_voltage(self):
-        """Read voltage in volts"""
-        raw = self.read_raw()
-        if raw is None:
+    def read_voltage_raw(self):
+        """Read raw voltage (no offset correction)"""
+        counts = self.read_counts()
+        if counts is None:
             return None
         
-        # Convert to voltage
-        # Full scale = ±VREF/GAIN
-        voltage = (raw / 8388608.0) * (self.vref / self.gain)
+        voltage = counts * self.volts_per_code
         return voltage
+    
+    def read_voltage(self):
+        """Read voltage with offset correction"""
+        v = self.read_voltage_raw()
+        if v is None:
+            return None
+        return v - self.offset_voltage
+    
+    def read_current(self):
+        """Read current in Amps: I = V / Rsh"""
+        v = self.read_voltage()
+        if v is None:
+            return None
+        
+        current = v / self.Rsh
+        return current
 
