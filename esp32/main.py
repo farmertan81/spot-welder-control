@@ -46,6 +46,7 @@ def dbg(msg: str):
         print_both("DBG " + msg)
 
 I2C_SCL = 2
+I2C_SDA = 3
 INA_ADDR = 0x40  # Charger INA226 (pack shunt + Vpack)
 
 FET_CHARGE = Pin(4, Pin.OUT, value=0)
