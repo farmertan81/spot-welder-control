@@ -145,6 +145,11 @@ class ESP32Link:
         elif line.startswith("WDATA_END,"):
             self._parse_wdata_end(line)
 
+        elif line.startswith("WDATA,"):
+            self._parse_wdata(line)
+
+        elif line.startswith("WDATA_END,"):
+            self._parse_wdata_end(line)
 
         elif line.startswith("DBG"):
             self.log(line)

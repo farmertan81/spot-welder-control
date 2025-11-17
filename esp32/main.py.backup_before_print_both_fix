@@ -581,7 +581,7 @@ def do_weld_ms(pulse_ms):
                 msg = "WDATA,%.3f,%.1f,%d" % (v, current, t_us)
             else:
                 msg = "VDATA,%.3f,%d" % (v, t_us)
-            print_both(msg)
+            print(msg)
             sample_count += 1
 
     FET_WELD1.off(); FET_WELD2.off()
@@ -609,7 +609,7 @@ def do_weld_ms(pulse_ms):
     if v_start is not None and v_end is not None:
         v_drop = v_start - v_end
 
-    print_both("WDATA_END,%d,%d,%.1f,%.2f,%.3f" % (sample_count, t_actual_us, peak_current, energy_j, v_drop))
+    print("WDATA_END,%d,%d,%.1f,%.2f,%.3f" % (sample_count, t_actual_us, peak_current, energy_j, v_drop))
 
     try:
         led[0] = prev
@@ -1476,7 +1476,7 @@ def do_weld_ms(pulse_ms):
             v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
             t_us = time.ticks_diff(time.ticks_us(), t_start_us)
             msg = "VDATA,%.3f,%d" % (v, t_us)
-            print_both(msg)  # Send to UART
+            print(msg)  # Send to UART
             sample_count += 1
     
     FET_WELD1.off(); FET_WELD2.off()

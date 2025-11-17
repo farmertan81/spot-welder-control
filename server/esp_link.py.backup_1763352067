@@ -145,7 +145,6 @@ class ESP32Link:
         elif line.startswith("WDATA_END,"):
             self._parse_wdata_end(line)
 
-
         elif line.startswith("DBG"):
             self.log(line)
         
@@ -272,41 +271,3 @@ if __name__ == '__main__':
             link.stop()
     else:
         print("Failed to start ESP32 link")
-
-    def _parse_wdata(self, line):
-        """Parse WDATA,voltage,current,time_us messages during weld"""
-        try:
-            parts = line.strip().split(',')
-            if len(parts) >= 4:
-                v = float(parts[1])
-                i = float(parts[2])
-                t_us = int(parts[3])
-                
-                # Update status with high-speed current
-                with self.lock:
-                    self.status['i'] = i  # Override INA226 current during weld
-                    self.status['v'] = v
-                    self.status['weld_time_us'] = t_us
-        except Exception as e:
-            pass
-
-    def _parse_wdata_end(self, line):
-        """Parse WDATA_END,samples,duration,peak_current,energy,voltage_drop"""
-        try:
-            parts = line.strip().split(',')
-            if len(parts) >= 6:
-                samples = int(parts[1])
-                duration_us = int(parts[2])
-                peak_current = float(parts[3])
-                energy_j = float(parts[4])
-                v_drop = float(parts[5])
-                
-                # Store weld summary
-                with self.lock:
-                    self.status['weld_samples'] = samples
-                    self.status['weld_duration_us'] = duration_us
-                    self.status['weld_peak_current'] = peak_current
-                    self.status['weld_energy_j'] = energy_j
-                    self.status['weld_voltage_drop'] = v_drop
-        except Exception as e:
-            pass

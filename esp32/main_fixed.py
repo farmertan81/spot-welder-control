@@ -11,17 +11,6 @@
 # ====
 
 from machine import Pin, SoftI2C, deepsleep, UART, ADC
-
-# ---- ADS1256 Current Sensor Import ----
-ADS1256_AVAILABLE = False
-try:
-    import ads1256_esp32
-    from machine import SPI
-    ADS1256_AVAILABLE = True
-    print("✓ ADS1256 driver imported")
-except Exception as e:
-    print(f"ADS1256 import failed: {e}")
-    ADS1256_AVAILABLE = False
 import time, struct, neopixel
 import machine, esp32
 import math, sys, select
@@ -57,7 +46,11 @@ def dbg(msg: str):
         print_both("DBG " + msg)
 
 I2C_SCL = 2
+INA_ADDR = 0x40  # Charger INA226 (pack shunt + Vpack)
+
+# ---- PINS ----
 I2C_SDA = 3
+I2C_SCL = 2
 INA_ADDR = 0x40  # Charger INA226 (pack shunt + Vpack)
 
 FET_CHARGE = Pin(4, Pin.OUT, value=0)
@@ -179,30 +172,7 @@ try:
             uart.write(b"HELLO_PI\n")
             time.sleep(0.2)
     print("UART1 ready @115200 on GPIO12/13")
-
-# ---- ADS1256 Current Sensor Initialization ----
 except Exception as e:
-    print("UART init failed:", e)
-    uart = None
-
-# ---- ADS1256 Current Sensor Initialization ----
-weld_samples = []
-MAX_WELD_SAMPLES = 1000
-
-if ADS1256_AVAILABLE:
-    try:
-        spi_ads = SPI(1, baudrate=1000000, polarity=0, phase=1,
-                      sck=Pin(40), mosi=Pin(39), miso=Pin(38))
-        adc_current = ads1256_esp32.ADS1256(spi_ads, cs_pin=17, drdy_pin=18)
-        print("✓ ADS1256 current sensor initialized")
-        print(f"ADS1256 offset: {adc_current.offset_voltage:.6f} V")
-    except Exception as e:
-        print(f"ADS1256 init failed: {e}")
-        ADS1256_AVAILABLE = False
-        adc_current = None
-else:
-    adc_current = None
-    print("ADS1256 driver not available")
     print("UART init failed:", e)
     uart = None
 
@@ -232,7 +202,6 @@ def uart_try_read_line():
             try:
                 return line.decode('utf-8').strip()
             except:
-                    print("DBG: ADS1256 read failed!")
                 return ''.join(chr(b) for b in line if 32 <= b < 127).strip()
     except Exception:
         pass
@@ -527,7 +496,7 @@ def weld_safe_to_fire(v_pack_now):
     return True, "OK"
 
 def do_weld_ms(pulse_ms):
-    global next_weld_ok_at, weld_samples
+    global next_weld_ok_at
     if pulse_ms < 1: pulse_ms = 1
     if pulse_ms > 5000: pulse_ms = 5000
     try:
@@ -535,89 +504,39 @@ def do_weld_ms(pulse_ms):
     except Exception:
         prev = (0,0,0)
     led_red()
-
+    
     # Turn OFF charger FET during weld (critical!)
     FET_CHARGE.off()
-    time.sleep(0.001)
-
-    # Clear sample buffer
-    weld_samples = []
+    time.sleep(0.001)  # Brief delay to ensure FET is off
     
-    # Stream voltage and current during weld
+    # Stream voltage during weld
     t_start_us = time.ticks_us()
     t_start_ms = time.ticks_ms()
     FET_WELD1.on(); FET_WELD2.on()
-
-    # Fast sampling during weld
-    sample_count = 0
-    v_start = None
-    v_end = None
     
+    # Fast voltage sampling during weld
+    sample_count = 0
     while time.ticks_diff(time.ticks_ms(), t_start_ms) < pulse_ms:
-        t_us = time.ticks_diff(time.ticks_us(), t_start_us)
-        
-        # Read voltage
         raw = i2c_read_u16(REG_BUS_VOLT)
         if raw is not None:
             v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
-            if v_start is None:
-                v_start = v
-            v_end = v
-            
-            # Read current from ADS1256 (if DRDY ready)
-            print("DBG: Checking ADS1256...")
-            current = None
-            if ADS1256_AVAILABLE and adc_current:
-                try:
-                    current = adc_current.read_current()
-                    weld_samples.append((t_us, v, current))
-                    print("DBG: Got current = %.1f A" % current)
-                except:
-                    print("DBG: ADS1256 read failed!")
-                    pass
-            
-            # Send data to UART
-            if current is not None:
-                msg = "WDATA,%.3f,%.1f,%d" % (v, current, t_us)
-            else:
-                msg = "VDATA,%.3f,%d" % (v, t_us)
-            print_both(msg)
+            t_us = time.ticks_diff(time.ticks_us(), t_start_us)
+            msg = "VDATA,%.3f,%d" % (v, t_us)
+            print(msg)  # Send to UART
             sample_count += 1
-
+    
     FET_WELD1.off(); FET_WELD2.off()
     t_actual_us = time.ticks_diff(time.ticks_us(), t_start_us)
-
-    # Calculate statistics
-    peak_current = 0.0
-    energy_j = 0.0
     
-    if len(weld_samples) > 1:
-        for _, _, i in weld_samples:
-            if i is not None and abs(i) > abs(peak_current):
-                peak_current = i
-        
-        R_total = 0.010
-        for idx in range(len(weld_samples) - 1):
-            t1, v1, i1 = weld_samples[idx]
-            t2, v2, i2 = weld_samples[idx + 1]
-            if i1 is not None and i2 is not None:
-                dt = (t2 - t1) / 1e6
-                p_avg = ((i1**2 + i2**2) / 2.0) * R_total
-                energy_j += p_avg * dt
+    # Send summary
+    print("VDATA_END,%d,%d" % (sample_count, t_actual_us))
     
-    v_drop = 0.0
-    if v_start is not None and v_end is not None:
-        v_drop = v_start - v_end
-
-    print_both("WDATA_END,%d,%d,%.1f,%.2f,%.3f" % (sample_count, t_actual_us, peak_current, energy_j, v_drop))
-
     try:
-        led[0] = prev
-        led.write()
+        led[0] = prev; led.write()
     except Exception:
         pass
-
     next_weld_ok_at = time.ticks_add(time.ticks_ms(), WELD_LOCKOUT_MS)
+
 
 def trigger_weld():
     global PULSE_MS, last_weld_time
@@ -1155,7 +1074,6 @@ def uart_try_read_line():
             try:
                 return line.decode('utf-8').strip()
             except:
-                    print("DBG: ADS1256 read failed!")
                 return ''.join(chr(b) for b in line if 32 <= b < 127).strip()
     except Exception:
         pass
@@ -1476,7 +1394,7 @@ def do_weld_ms(pulse_ms):
             v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
             t_us = time.ticks_diff(time.ticks_us(), t_start_us)
             msg = "VDATA,%.3f,%d" % (v, t_us)
-            print_both(msg)  # Send to UART
+            print(msg)  # Send to UART
             sample_count += 1
     
     FET_WELD1.off(); FET_WELD2.off()

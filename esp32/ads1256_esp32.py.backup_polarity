@@ -177,6 +177,6 @@ class ADS1256:
         if v is None:
             return None
         
-        current = -v / self.Rsh
+        current = v / self.Rsh
         return current
 
