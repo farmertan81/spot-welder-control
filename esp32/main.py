@@ -180,6 +180,11 @@ try:
     print("UART1 ready @115200 on GPIO12/13")
 
 # ---- ADS1256 Current Sensor Initialization ----
+except Exception as e:
+    print("UART init failed:", e)
+    uart = None
+
+# ---- ADS1256 Current Sensor Initialization ----
 weld_samples = []
 MAX_WELD_SAMPLES = 1000
 
@@ -197,7 +202,6 @@ if ADS1256_AVAILABLE:
 else:
     adc_current = None
     print("ADS1256 driver not available")
-except Exception as e:
     print("UART init failed:", e)
     uart = None
 
