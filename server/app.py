@@ -3,6 +3,9 @@
 # Weld cooldown protection
 WELD_COOLDOWN_MS = 3000  # 3 seconds minimum between welds
 last_weld_time = 0
+# Circuit resistance
+TOTAL_RESISTANCE_OHM = 0.00296  # 2.96 mΩ total circuit resistance
+
 
 """
 Spot Welder Control Server
@@ -106,13 +109,42 @@ def on_esp_log(msg):
     """Handle ESP32 log messages including FIRED events"""
     global esp_status, is_capturing, weld_start_time, current_weld_data, pedal_active
 
-    # Check for weld trigger (start capture)
+    # Check for weld trigger (start capture IMMEDIATELY)
     if "trigger weld" in msg:
         log(msg)
+        global is_capturing, weld_start_time, current_weld_data
         with status_lock:
             esp_status["state"] = "FIRING"
+        # Start capturing immediately!
+        with weld_lock:
+            is_capturing = True
+            weld_start_time = time.time()
+            current_weld_data = []
+            log("🔥 Weld capture started immediately on PEDAL")
 
     # Check for FIRED message (end capture)
+    # Check for WDATA message (weld current data)
+    elif "WDATA," in msg:
+        try:
+            # Parse: WDATA,voltage,current,time_us
+            parts = msg.split(',')
+            if len(parts) >= 4:
+                v = float(parts[1])
+                i = float(parts[2])
+                t_us = int(parts[3])
+                
+                # Add to current weld data if capturing
+                if is_capturing:
+                    with weld_lock:
+                        current_weld_data.append({
+                            "t": t_us / 1000.0,  # Convert to ms
+                            "v": v,
+                            "i": i
+                        })
+                    log(f"📊 WDATA: t={t_us/1000.0:.2f}ms, v={v:.2f}V, i={i:.1f}A")
+        except Exception as e:
+            log(f"⚠️ Failed to parse WDATA: {e}")
+
     elif "FIRED," in msg:
         log(msg)
         # Parse actual weld duration from FIRED message
@@ -223,12 +255,31 @@ def save_weld_history(weld_data):
     """Save weld to history, keep last MAX_WELD_HISTORY"""
     global weld_counter
     weld_counter += 1
-    
+
+    # Handle both formats: list of dicts or dict of lists
+    if isinstance(weld_data, list):
+        # Format from ESP32 WDATA: [{"t": ..., "v": ..., "i": ...}, ...]
+        timestamps = [d["t"] / 1000.0 for d in weld_data]  # Convert ms to seconds
+        voltages = [d["v"] for d in weld_data]
+        currents = [d["i"] for d in weld_data]
+    else:
+        # Format from ADC: {"timestamps": [...], "voltage": [...], "current": [...]}
+        timestamps = weld_data.get("timestamps", [])
+        voltages = weld_data.get("voltage", [])
+        currents = weld_data.get("current", [])
+
     # Calculate stats
-    energy_j = calculate_energy(weld_data)
-    peak_current = max(weld_data["current"]) if weld_data["current"] else 0.0
-    duration_ms = (weld_data["timestamps"][-1] - weld_data["timestamps"][0]) * 1000 if len(weld_data["timestamps"]) > 1 else 0.0
-    
+    energy_j = 0.0
+    if len(currents) > 1 and len(timestamps) > 1:
+        # Integrate I²R over time
+        for j in range(len(currents) - 1):
+            dt = timestamps[j+1] - timestamps[j]
+            i_avg = (currents[j] + currents[j+1]) / 2.0
+            energy_j += (i_avg ** 2) * TOTAL_RESISTANCE_OHM * dt
+
+    peak_current = max(currents) if currents else 0.0
+    duration_ms = (timestamps[-1] - timestamps[0]) * 1000 if len(timestamps) > 1 else 0.0
+
     # Save weld data
     filename = f"weld_{weld_counter:04d}.json"
     filepath = os.path.join(WELD_HISTORY_DIR, filename)
@@ -421,6 +472,35 @@ def handle_connect():
 def handle_disconnect():
     log("WebSocket client disconnected")
 
+
+@socketio.on('clear_weld_data')
+def handle_clear_weld_data():
+    global weld_counter
+    
+    log("[CLEAR] Clearing weld data and resetting counter")
+    
+    # Reset counter
+    weld_counter = 0
+    
+    # Delete all weld history files
+    try:
+        weld_files = [f for f in os.listdir(WELD_HISTORY_DIR) if f.startswith("weld_")]
+        for weld_file in weld_files:
+            os.remove(os.path.join(WELD_HISTORY_DIR, weld_file))
+        log(f"✅ Deleted {len(weld_files)} weld history files")
+    except Exception as e:
+        log(f"⚠️ Error clearing weld files: {e}")
+    
+    # Update settings file
+    settings = load_settings()
+    settings['weld_counter'] = 0
+    save_settings(settings)
+    
+    # Notify all clients
+    socketio.emit('weld_data_cleared')
+    socketio.emit('weld_counter_update', {'count': 0})
+    
+    log("✅ Weld data cleared and counter reset")
 # Background threads
 def status_broadcast_thread():
     """Broadcast status updates and capture weld data with pre-trigger buffering"""
