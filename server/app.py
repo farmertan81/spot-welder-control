@@ -547,9 +547,14 @@ def status_broadcast_thread():
 
         # Detect weld start
         if current_state == "FIRING" and last_state != "FIRING":
-            log("🔥 Weld started - capturing data")
+            # Only start capture if not already capturing (pedal already started it)
             with weld_lock:
-                is_capturing = True
+                already_capturing = is_capturing
+            
+            if not already_capturing:
+                log("🔥 Weld started - capturing data")
+                with weld_lock:
+                    is_capturing = True
                 # Find first high-current sample in pre-trigger buffer (>100A = weld started)
                 TRIGGER_THRESHOLD = 100.0  # Amps
                 first_high_current_time = None
