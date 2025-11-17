@@ -1418,48 +1418,6 @@ def weld_safe_to_fire(v_pack_now):
         return False, "CHG_ON"
     return True, "OK"
 
-def do_weld_ms(pulse_ms):
-    global next_weld_ok_at
-    if pulse_ms < 1: pulse_ms = 1
-    if pulse_ms > 5000: pulse_ms = 5000
-    try:
-        prev = led[0]
-    except Exception:
-        prev = (0,0,0)
-    led_red()
-    
-    # Turn OFF charger FET during weld (critical!)
-    FET_CHARGE.off()
-    time.sleep(0.001)  # Brief delay to ensure FET is off
-    
-    # Stream voltage during weld
-    t_start_us = time.ticks_us()
-    t_start_ms = time.ticks_ms()
-    FET_WELD1.on(); FET_WELD2.on()
-    
-    # Fast voltage sampling during weld
-    sample_count = 0
-    while time.ticks_diff(time.ticks_ms(), t_start_ms) < pulse_ms:
-        raw = i2c_read_u16(REG_BUS_VOLT)
-        if raw is not None:
-            v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
-            t_us = time.ticks_diff(time.ticks_us(), t_start_us)
-            msg = "VDATA,%.3f,%d" % (v, t_us)
-            print("DBG: About to call print_both with:", msg)
-            print_both(msg)  # Send to UART
-            sample_count += 1
-    
-    FET_WELD1.off(); FET_WELD2.off()
-    t_actual_us = time.ticks_diff(time.ticks_us(), t_start_us)
-    
-    # Send summary
-    print("VDATA_END,%d,%d" % (sample_count, t_actual_us))
-    
-    try:
-        led[0] = prev; led.write()
-    except Exception:
-        pass
-    next_weld_ok_at = time.ticks_add(time.ticks_ms(), WELD_LOCKOUT_MS)
 
 
 def trigger_weld():
