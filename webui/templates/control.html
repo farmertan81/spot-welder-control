@@ -516,8 +516,8 @@
                     }
                 }
                 
-                // Restore active preset highlight from localStorage
-                const savedPreset = localStorage.getItem('activePreset');
+                // Get active preset from backend
+                const savedPreset = data.active_preset || 'P1';
                 if (savedPreset && presets[savedPreset]) {
                     currentPreset = savedPreset;
                     const btn = document.querySelector('.preset-btn[onclick*="' + savedPreset + '"]');
