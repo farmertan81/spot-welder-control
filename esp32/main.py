@@ -238,6 +238,7 @@ def uart_try_read_line():
     return None
 
 def print_both(s: str):
+    global uart
     # Mirror prints to USB console and UART1
     try:
         print(s)
@@ -1159,6 +1160,7 @@ def uart_try_read_line():
     return None
 
 def print_both(s: str):
+    global uart
     # Mirror prints to USB console and UART1
     try:
         print(s)
