@@ -472,6 +472,35 @@ def handle_connect():
 def handle_disconnect():
     log("WebSocket client disconnected")
 
+
+@socketio.on('clear_weld_data')
+def handle_clear_weld_data():
+    global weld_counter
+    
+    log("[CLEAR] Clearing weld data and resetting counter")
+    
+    # Reset counter
+    weld_counter = 0
+    
+    # Delete all weld history files
+    try:
+        weld_files = [f for f in os.listdir(WELD_HISTORY_DIR) if f.startswith("weld_")]
+        for weld_file in weld_files:
+            os.remove(os.path.join(WELD_HISTORY_DIR, weld_file))
+        log(f"✅ Deleted {len(weld_files)} weld history files")
+    except Exception as e:
+        log(f"⚠️ Error clearing weld files: {e}")
+    
+    # Update settings file
+    settings = load_settings()
+    settings['weld_counter'] = 0
+    save_settings(settings)
+    
+    # Notify all clients
+    socketio.emit('weld_data_cleared', broadcast=True)
+    socketio.emit('weld_counter_update', {'count': 0}, broadcast=True)
+    
+    log("✅ Weld data cleared and counter reset")
 # Background threads
 def status_broadcast_thread():
     """Broadcast status updates and capture weld data with pre-trigger buffering"""

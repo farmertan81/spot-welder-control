@@ -589,27 +589,15 @@ function autoZoomChart(chart) {
                 document.getElementById('duration').textContent = weld.duration_ms.toFixed(1) + ' ms';
                 document.getElementById('weld-num').textContent = weld.weld_number;
                 
-                // Update chart - handle both data formats
-                let currentData, voltageData;
-                
-                if (Array.isArray(weld.data) && weld.data.length > 0 && 't' in weld.data[0]) {
-                    // New format: [{t: ..., v: ..., i: ...}, ...]
-                    currentData = weld.data.map(d => ({ x: d.t, y: d.i }));
-                    voltageData = weld.data.map(d => ({ x: d.t, y: d.v }));
-                } else {
-                    // Old format: {timestamps: [...], current: [...], voltage: [...]}
-                    currentData = weld.data.timestamps.map((t, i) => ({
-                        x: t * 1000,
-                        y: weld.data.current[i]
-                    }));
-                    voltageData = weld.data.timestamps.map((t, i) => ({
-                        x: t * 1000,
-                        y: weld.data.voltage[i]
-                    }));
-                }
-                
-                chart.data.datasets[0].data = currentData;
-                chart.data.datasets[1].data = voltageData;
+                // Update chart
+                chart.data.datasets[0].data = weld.data.timestamps.map((t, i) => ({
+                    x: t * 1000,
+                    y: weld.data.current[i]
+                }));
+                chart.data.datasets[1].data = weld.data.timestamps.map((t, i) => ({
+                    x: t * 1000,
+                    y: weld.data.voltage[i]
+                }));
                 // Apply smoothing
                 chart.data.datasets[0].data = smoothData(chart.data.datasets[0].data, 3);
                 // Auto-zoom to relevant data

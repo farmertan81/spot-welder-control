@@ -201,9 +201,17 @@ def load_settings():
 
 def save_settings(data):
     """Save settings to JSON"""
+    # Load existing settings to preserve fields like weld_counter
+    settings = load_settings()
+    
+    # Update with new data
+    settings.update(data)
+    
+    # Save back
     with open(SETTINGS_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
-    log(f"Settings saved: mode={data.get('mode')}, d1={data.get('d1')}")
+        json.dump(settings, f, indent=2)
+    
+    log(f"Settings saved: mode={settings.get('mode')}, d1={settings.get('d1')}, active_preset={settings.get('active_preset', 'N/A')}")
 
 def load_presets():
     """Load presets from JSON"""
@@ -472,6 +480,35 @@ def handle_connect():
 def handle_disconnect():
     log("WebSocket client disconnected")
 
+
+@socketio.on('clear_weld_data')
+def handle_clear_weld_data():
+    global weld_counter
+    
+    log("[CLEAR] Clearing weld data and resetting counter")
+    
+    # Reset counter
+    weld_counter = 0
+    
+    # Delete all weld history files
+    try:
+        weld_files = [f for f in os.listdir(WELD_HISTORY_DIR) if f.startswith("weld_")]
+        for weld_file in weld_files:
+            os.remove(os.path.join(WELD_HISTORY_DIR, weld_file))
+        log(f"✅ Deleted {len(weld_files)} weld history files")
+    except Exception as e:
+        log(f"⚠️ Error clearing weld files: {e}")
+    
+    # Update settings file
+    settings = load_settings()
+    settings['weld_counter'] = 0
+    save_settings(settings)
+    
+    # Notify all clients
+    socketio.emit('weld_data_cleared')
+    socketio.emit('weld_counter_update', {'count': 0})
+    
+    log("✅ Weld data cleared and counter reset")
 # Background threads
 def status_broadcast_thread():
     """Broadcast status updates and capture weld data with pre-trigger buffering"""

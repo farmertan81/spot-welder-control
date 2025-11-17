@@ -3,9 +3,6 @@
 # Weld cooldown protection
 WELD_COOLDOWN_MS = 3000  # 3 seconds minimum between welds
 last_weld_time = 0
-# Circuit resistance
-TOTAL_RESISTANCE_OHM = 0.00296  # 2.96 mΩ total circuit resistance
-
 
 """
 Spot Welder Control Server
@@ -255,31 +252,12 @@ def save_weld_history(weld_data):
     """Save weld to history, keep last MAX_WELD_HISTORY"""
     global weld_counter
     weld_counter += 1
-
-    # Handle both formats: list of dicts or dict of lists
-    if isinstance(weld_data, list):
-        # Format from ESP32 WDATA: [{"t": ..., "v": ..., "i": ...}, ...]
-        timestamps = [d["t"] / 1000.0 for d in weld_data]  # Convert ms to seconds
-        voltages = [d["v"] for d in weld_data]
-        currents = [d["i"] for d in weld_data]
-    else:
-        # Format from ADC: {"timestamps": [...], "voltage": [...], "current": [...]}
-        timestamps = weld_data.get("timestamps", [])
-        voltages = weld_data.get("voltage", [])
-        currents = weld_data.get("current", [])
-
+    
     # Calculate stats
-    energy_j = 0.0
-    if len(currents) > 1 and len(timestamps) > 1:
-        # Integrate I²R over time
-        for j in range(len(currents) - 1):
-            dt = timestamps[j+1] - timestamps[j]
-            i_avg = (currents[j] + currents[j+1]) / 2.0
-            energy_j += (i_avg ** 2) * TOTAL_RESISTANCE_OHM * dt
-
-    peak_current = max(currents) if currents else 0.0
-    duration_ms = (timestamps[-1] - timestamps[0]) * 1000 if len(timestamps) > 1 else 0.0
-
+    energy_j = calculate_energy(weld_data)
+    peak_current = max(weld_data["current"]) if weld_data["current"] else 0.0
+    duration_ms = (weld_data["timestamps"][-1] - weld_data["timestamps"][0]) * 1000 if len(weld_data["timestamps"]) > 1 else 0.0
+    
     # Save weld data
     filename = f"weld_{weld_counter:04d}.json"
     filepath = os.path.join(WELD_HISTORY_DIR, filename)

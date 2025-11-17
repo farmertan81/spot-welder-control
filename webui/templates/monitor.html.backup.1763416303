@@ -5,7 +5,39 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Weld Monitor</title>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+// Clear Weld Data button
+document.getElementById('clear-weld-data-btn').addEventListener('click', function() {
+    if (confirm('Clear all weld data and reset counter?')) {
+        socket.emit('clear_weld_data');
+    }
+});
+
+// Listen for clear confirmation from server
+socket.on('weld_data_cleared', function() {
+    const tbody = document.getElementById('weld-history-body');
+    if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">No welds yet...</td></tr>';
+    }
+    console.log('✅ Weld data cleared');
+});
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+// Clear Weld Data button
+document.getElementById('clear-weld-data-btn').addEventListener('click', function() {
+    if (confirm('Clear all weld data and reset counter?')) {
+        socket.emit('clear_weld_data');
+    }
+});
+
+// Listen for clear confirmation from server
+socket.on('weld_data_cleared', function() {
+    const tbody = document.getElementById('weld-history-body');
+    if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">No welds yet...</td></tr>';
+    }
+    console.log('✅ Weld data cleared');
+});
     <style>
         * {
             margin: 0;
@@ -181,7 +213,10 @@
 <body>
     <div class="container">
         <header>
-            <h1>📊 Weld Monitor</h1>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+    <h1>📊 Weld Monitor</h1>
+    <button id="clear-weld-data-btn" class="btn btn-danger">Clear Weld Data</button>
+</div>
             <div class="nav-links">
                 <a href="/control">Control</a>
                 <a href="/monitor">Monitor</a>
@@ -632,5 +667,21 @@ function autoZoomChart(chart) {
         // Initialize
         loadWeldHistory();
     </script>
+
+// Clear Weld Data button
+document.getElementById('clear-weld-data-btn').addEventListener('click', function() {
+    if (confirm('Clear all weld data and reset counter?')) {
+        socket.emit('clear_weld_data');
+    }
+});
+
+// Listen for clear confirmation from server
+socket.on('weld_data_cleared', function() {
+    const tbody = document.getElementById('weld-history-body');
+    if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">No welds yet...</td></tr>';
+    }
+    console.log('✅ Weld data cleared');
+});
 </body>
 </html>
