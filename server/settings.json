@@ -1,10 +1,10 @@
 {
   "mode": 1,
-  "d1": 50,
+  "d1": 25,
   "gap1": 0,
   "d2": 0,
   "gap2": 0,
   "d3": 0,
   "active_preset": "P2",
-  "weld_counter": 7
+  "weld_counter": 9
 }

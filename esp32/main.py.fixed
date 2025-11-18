@@ -544,15 +544,16 @@ def do_weld_ms(pulse_ms):
     # Clear sample buffer
     weld_samples = []
     
-    # Stream voltage and current during weld
-    t_start_us = time.ticks_us()
-    t_start_ms = time.ticks_ms()
-    # Start ADS1256 continuous mode for fast sampling
+    # Start ADS1256 continuous mode FIRST
     if ADS1256_AVAILABLE and adc_current:
         adc_current.start_continuous()
+        # Small delay for ADC to stabilize
+        time.sleep_us(100)
 
+    # Set t=0 RIGHT before firing
+    t_start_us = time.ticks_us()
+    t_start_ms = time.ticks_ms()
     FET_WELD1.on(); FET_WELD2.on()
-
     # Fast sampling during weld
     sample_count = 0
     v_start = None
@@ -1019,31 +1020,3 @@ except KeyboardInterrupt:
     FET_CHARGE.off()
     led_off()
     print_both("\nManual stop — charger OFF")
-BUTTON_DEBOUNCE_MS = 30
-
-# Weld pedal (active-low)
-PEDAL_PIN = 7
-pedal = Pin(PEDAL_PIN, Pin.IN, Pin.PULL_UP)
-PEDAL_DEBOUNCE_MS = 25
-WELD_DEBOUNCE_MS = 500  # Minimum time between welds (ms)
-WELD_LOCKOUT_MS = 300
-next_weld_ok_at = 0
-last_pedal_change = 0
-last_weld_time = 0
-pedal_state = 1  # 1=idle, 0=pressed
-
-# ---- Persistent weld pulse (used by pedal and can be set over ASCII) ----
-PULSE_MS_DEFAULT = 10
-PULSE_MS = PULSE_MS_DEFAULT
-
-# Thermistor on GPIO8
-THERM_PIN = 8
-therm_adc = ADC(Pin(THERM_PIN))
-therm_adc.atten(ADC.ATTN_11DB)  # 0-3.3V range
-
-# Thermistor constants (CALIBRATED - your proven values)
-SERIES_RESISTOR = 10000
-THERMISTOR_NOMINAL = 173000
-TEMPERATURE_NOMINAL = 20
-BETA = 3950
-

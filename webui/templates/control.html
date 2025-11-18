@@ -168,7 +168,7 @@
         
         .form-group select,
         .form-group input {
-            width: 100%;
+            width: 90%;
             padding: 10px;
             background: #333;
             border: 1px solid #444;
@@ -388,24 +388,24 @@
                     <h2>Presets</h2>
                     <div class="presets">
                         <div class="preset-btn" onclick="loadPreset('P1')">
-                            <div>P1</div>
-                            <div style="font-size: 0.8em; color: #aaa;" id="p1-name">Preset 1</div>
+                            <div style="display: none;">P1</div>
+                            <div style="font-size: 1.1em; color: #fff; font-weight: bold;" id="p1-name">Preset 1</div>
                         </div>
                         <div class="preset-btn" onclick="loadPreset('P2')">
-                            <div>P2</div>
-                            <div style="font-size: 0.8em; color: #aaa;" id="p2-name">Preset 2</div>
+                            <div style="display: none;">P2</div>
+                            <div style="font-size: 1.1em; color: #fff; font-weight: bold;" id="p2-name">Preset 2</div>
                         </div>
                         <div class="preset-btn" onclick="loadPreset('P3')">
-                            <div>P3</div>
-                            <div style="font-size: 0.8em; color: #aaa;" id="p3-name">Preset 3</div>
+                            <div style="display: none;">P3</div>
+                            <div style="font-size: 1.1em; color: #fff; font-weight: bold;" id="p3-name">Preset 3</div>
                         </div>
                         <div class="preset-btn" onclick="loadPreset('P4')">
-                            <div>P4</div>
-                            <div style="font-size: 0.8em; color: #aaa;" id="p4-name">Preset 4</div>
+                            <div style="display: none;">P4</div>
+                            <div style="font-size: 1.1em; color: #fff; font-weight: bold;" id="p4-name">Preset 4</div>
                         </div>
                         <div class="preset-btn" onclick="loadPreset('P5')">
-                            <div>P5</div>
-                            <div style="font-size: 0.8em; color: #aaa;" id="p5-name">Preset 5</div>
+                            <div style="display: none;">P5</div>
+                            <div style="font-size: 1.1em; color: #fff; font-weight: bold;" id="p5-name">Preset 5</div>
                         </div>
                     </div>
                     <button class="btn btn-secondary" style="width: 70px; padding: 4px 8px; font-size: 0.85em;" onclick="savePreset()">Save</button>
@@ -518,7 +518,7 @@
                 }
                 
                 // Get active preset from backend
-                const savedPreset = data.active_preset || 'P1';
+                const savedPreset = data.active_preset;
                 if (savedPreset && presets[savedPreset]) {
                     currentPreset = savedPreset;
                     const btn = document.querySelector('.preset-btn[onclick*="' + savedPreset + '"]');
@@ -553,14 +553,17 @@
         
         // Save preset
         async function savePreset() {
-            // Use the currently active preset
-            if (!currentPreset) {
-                alert('⚠️ Please select a preset first!');
+            // Ask which preset slot to save to
+            const presetId = prompt('Save to which preset? (P1, P2, P3, P4, or P5):', currentPreset || 'P1');
+            if (!presetId || !['P1', 'P2', 'P3', 'P4', 'P5'].includes(presetId.toUpperCase())) {
+                alert('⚠️ Invalid preset! Please enter P1, P2, P3, P4, or P5');
                 return;
             }
-
-            const name = prompt('Preset name for ' + currentPreset + ':', presets[currentPreset]?.name || currentPreset);
+            
+            const presetIdUpper = presetId.toUpperCase();
+            const name = prompt('Preset name for ' + presetIdUpper + ':', presets[presetIdUpper]?.name || presetIdUpper);
             if (!name) return;
+            
             const presetData = {
                 name: name,
                 mode: parseInt(document.getElementById('mode').value),
@@ -570,13 +573,13 @@
                 gap2: parseInt(document.getElementById('gap2').value),
                 d3: parseInt(document.getElementById('d3').value)
             };
-            
+
             const resp = await fetch('/api/save_preset', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({preset_id: currentPreset, data: presetData})
+                body: JSON.stringify({preset_id: presetIdUpper, data: presetData})
             });
-            
+
             if (resp.ok) {
                 alert('✅ Preset saved!');
                 loadPresets();
@@ -586,6 +589,17 @@
         // Initialize
         loadSettings();
         loadPresets();
+
+        // Clear preset highlight when manual changes are made
+        ['d1', 'gap1', 'd2', 'gap2', 'd3', 'mode'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('input', () => {
+                    currentPreset = null;
+                    document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+                });
+            }
+        });
     </script>
 
 </body>
