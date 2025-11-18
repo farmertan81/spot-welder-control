@@ -159,10 +159,10 @@ def on_esp_log(msg):
             pass
 
         # Stop capturing and save immediately
-        if is_capturing:
-            is_capturing = False
-            log("✅ Weld ended - saving data")
-            with weld_lock:
+        with weld_lock:
+            if is_capturing:
+                is_capturing = False
+                log("✅ Weld ended - saving data")
                 weld_record = save_weld_history(current_weld_data)
             
             pedal_active = False
