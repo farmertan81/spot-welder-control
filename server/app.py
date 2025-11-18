@@ -25,7 +25,7 @@ import math
 
 # Import our drivers
 from esp_link import ESP32Link
-from ads1256_driver import ADS1256
+# ADS1256 now handled by ESP32, not Pi
 
 app = Flask(__name__, 
             template_folder='../webui/templates',
@@ -551,11 +551,9 @@ def status_broadcast_thread():
             # Only start capture if not already capturing (pedal already started it)
             with weld_lock:
                 already_capturing = is_capturing
-            
+
             if not already_capturing:
-                import traceback
-                stack = ''.join(traceback.format_stack())
-                log(f"🔥 Weld started - capturing data\nSTACK TRACE:\n{stack}")
+                log(f"🔥 Weld started - capturing data (broadcast thread)")
                 with weld_lock:
                     is_capturing = True
                 # Find first high-current sample in pre-trigger buffer (>100A = weld started)
@@ -572,7 +570,6 @@ def status_broadcast_thread():
                     log(f"⚡ Trigger detected at first high-current sample ({TRIGGER_THRESHOLD}A threshold)")
                 else:
                     weld_start_time = time.time()
-                    log(f"⚠️ No high-current pre-trigger found, using current time as t=0")
                 
                 # Initialize weld data with pre-trigger samples
                 current_weld_data = {"voltage": [], "current": [], "timestamps": []}
@@ -583,7 +580,6 @@ def status_broadcast_thread():
                     current_weld_data["timestamps"].append(elapsed)
                     current_weld_data["voltage"].append(sample["v"])
                     current_weld_data["current"].append(sample["i"])
-                    log(f"Pre-trigger: t={elapsed*1000:.2f}ms, i={sample['i']:.3f}A")
                 
             pedal_active = True
             socketio.emit('pedal_active', {"active": True})
@@ -626,7 +622,9 @@ def status_broadcast_thread():
                 "duration_ms": weld_record["duration_ms"]
             })
 
-        last_state = current_state
+        # Only update last_state if we're not capturing (prevents duplicate triggers from delayed messages)
+        if not is_capturing:
+            last_state = current_state
 
         # Broadcast status every 100ms (10Hz)
         if int(time.time() * 10) % 1 == 0:
@@ -663,18 +661,8 @@ if __name__ == '__main__':
     weld_counter = settings.get('weld_counter', 0)
     log(f"Weld counter: {weld_counter}")
     
-    # Initialize ADS1256
-    log("Initializing ADS1256...")
-    try:
-        adc = ADS1256(); adc.init()
-        if adc and adc.initialized:
-            log("✅ ADS1256 initialized")
-        else:
-            log("⚠️ ADS1256 failed to initialize")
-    except Exception as e:
-        log(f"⚠️ ADS1256 error: {e}")
-        adc = None
-    
+    # ADS1256 now on ESP32 - no Pi initialization needed
+    # ADS1256 now on ESP32 - no Pi initialization needed
     # Initialize ESP32 link
     log("Initializing ESP32 link...")
     esp_link = ESP32Link(

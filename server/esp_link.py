@@ -146,6 +146,14 @@ class ESP32Link:
             self._parse_wdata_end(line)
 
 
+        # OK responses from ESP32
+        elif line.startswith("OK,"):
+            self.log(f"✅ {line}")
+
+        # Error responses from ESP32
+        elif line.startswith("ERR,"):
+            self.log(f"❌ {line}")
+
         elif line.startswith("DBG"):
             self.log(line)
         
