@@ -544,15 +544,16 @@ def do_weld_ms(pulse_ms):
     # Clear sample buffer
     weld_samples = []
     
-    # Stream voltage and current during weld
-    t_start_us = time.ticks_us()
-    t_start_ms = time.ticks_ms()
-    # Start ADS1256 continuous mode for fast sampling
+    # Start ADS1256 continuous mode FIRST
     if ADS1256_AVAILABLE and adc_current:
         adc_current.start_continuous()
+        # Small delay for ADC to stabilize
+        time.sleep_us(100)
 
+    # Set t=0 RIGHT before firing
+    t_start_us = time.ticks_us()
+    t_start_ms = time.ticks_ms()
     FET_WELD1.on(); FET_WELD2.on()
-
     # Fast sampling during weld
     sample_count = 0
     v_start = None
