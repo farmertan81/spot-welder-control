@@ -553,7 +553,9 @@ def status_broadcast_thread():
                 already_capturing = is_capturing
             
             if not already_capturing:
-                log("🔥 Weld started - capturing data")
+                import traceback
+                stack = ''.join(traceback.format_stack())
+                log(f"🔥 Weld started - capturing data\nSTACK TRACE:\n{stack}")
                 with weld_lock:
                     is_capturing = True
                 # Find first high-current sample in pre-trigger buffer (>100A = weld started)
