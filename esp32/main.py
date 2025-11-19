@@ -360,6 +360,7 @@ print_both("VBUS_SCALE in use: " + str(VBUS_SCALE))
 print_both("Address mapping: V1=0x44  V2=0x41  V3/Vpack=0x40")
 
 I_SCALE         = 1.0
+I_USER_SCALE    = 2.65  # empirical correction: clamp / INA (≈15.3 / 4.83)
 
 last_vpack = None
 V_JUMP_MAX = 2.0
@@ -518,7 +519,8 @@ def ina_current_once():
     raw = i2c_read_u16(REG_CURRENT)
     if raw is None: return float('nan')
     if raw & 0x8000: raw -= 0x10000
-    return (raw * CURRENT_LSB) * I_SCALE
+    # Apply hardware CAL scaling *and* user correction factor
+    return (raw * CURRENT_LSB) * I_SCALE * I_USER_SCALE
 
 def ina_current_avg(n=3, delay=0.01):
     acc = 0.0; k = 0
@@ -1034,10 +1036,10 @@ try:
                 if cur is not None and (cur & 0x8000): cur -= 0x10000
                 vsh = (sh or 0) * VSHUNT_LSB
                 i_phys = vsh / R_SHUNT if sh is not None else float('nan')
-                i_inareg = (cur or 0) * CURRENT_LSB * I_SCALE
+                i_inareg = (cur or 0) * CURRENT_LSB * I_SCALE * I_USER_SCALE
                 cal_now = i2c_read_u16(REG_CALIB) or 0
-                dbg("Vsh=%.6f V  I_phys=%.3f A  I_INA=%.3f A  CAL=0x%04X  I_SCALE=%.6f" %
-                    (vsh, i_phys, i_inareg, cal_now, I_SCALE))
+                dbg("Vsh=%.6f V  I_phys=%.3f A  I_INA=%.3f A  CAL=0x%04X  I_SCALE=%.6f SCALE=%.3f" %
+                    (vsh, i_phys, i_inareg, cal_now, I_SCALE, I_USER_SCALE))
             
             print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d,pulse_ms=%d" %
                        (1 if system_enabled else 0, state, v_str, i_str, t_str,
