@@ -81,6 +81,7 @@ weld_lock = threading.Lock()
 # Hardware instances
 esp_link = None
 adc = None
+esp32_weld_summary = None
 
 def log(msg):
     """Add message to log buffer and print"""
@@ -98,6 +99,13 @@ def on_esp_status(data):
         # Extract temperature if present
         if 'temp' in data:
             temperature = data['temp']
+        # Also merge cell data into cells_status
+        if 'C1' in data:
+            cells_status['C1'] = data['C1']
+        if 'C2' in data:
+            cells_status['C2'] = data['C2']
+        if 'C3' in data:
+            cells_status['C3'] = data['C3']
 
 def on_esp_cells(data):
     """Callback when ESP32 sends CELLS"""
@@ -107,7 +115,7 @@ def on_esp_cells(data):
 
 def on_esp_log(msg):
     """Handle ESP32 log messages including FIRED events"""
-    global esp_status, is_capturing, weld_start_time, current_weld_data, pedal_active
+    global esp_status, is_capturing, weld_start_time, current_weld_data, pedal_active, esp32_weld_summary
 
     # Check for weld trigger (start capture IMMEDIATELY)
     if "trigger weld" in msg:
@@ -146,6 +154,31 @@ def on_esp_log(msg):
         except Exception as e:
             log(f"⚠️ Failed to parse WDATA: {e}")
 
+
+    # Check for WDATA_END message (weld summary from ESP32)
+    elif "WDATA_END," in msg:
+        try:
+            # Parse: WDATA_END,sample_count,t_actual_us,peak_current,energy_j,v_drop
+            parts = msg.split(',')
+            if len(parts) >= 6:
+                sample_count = int(parts[1])
+                t_actual_us = int(parts[2])
+                peak_current = float(parts[3])
+                energy_j = float(parts[4])
+                v_drop = float(parts[5])
+                
+                log(f"📊 WDATA_END: samples={sample_count}, duration={t_actual_us/1000.0:.1f}ms, peak={peak_current:.1f}A, energy={energy_j:.2f}J, Vdrop={v_drop:.3f}V")
+                
+                # Store for use when FIRED message arrives
+                global esp32_weld_summary
+                esp32_weld_summary = {
+                    "peak_current": peak_current,
+                    "energy": energy_j,
+                    "duration_us": t_actual_us,
+                    "v_drop": v_drop
+                }
+        except Exception as e:
+            log(f"⚠️ Failed to parse WDATA_END: {e}")
     elif "FIRED," in msg:
         log(msg)
         # Parse actual weld duration from FIRED message
@@ -163,7 +196,7 @@ def on_esp_log(msg):
             if is_capturing:
                 is_capturing = False
                 log("✅ Weld ended - saving data")
-                weld_record = save_weld_history(current_weld_data)
+                weld_record = save_weld_history(current_weld_data, esp32_weld_summary)
             
             pedal_active = False
             socketio.emit('pedal_active', {"active": False})
@@ -260,39 +293,47 @@ def calculate_energy(weld_data):
 
     return energy
 
-def save_weld_history(weld_data):
+def save_weld_history(weld_data, esp32_summary=None):
     """Save weld to history, keep last MAX_WELD_HISTORY"""
     global weld_counter
     weld_counter += 1
 
-    # Handle both formats: list of dicts or dict of lists
-    if isinstance(weld_data, list):
-        # Format from ESP32 WDATA: [{"t": ..., "v": ..., "i": ...}, ...]
-        timestamps = [d["t"] / 1000.0 for d in weld_data]  # Convert ms to seconds
-        voltages = [d["v"] for d in weld_data]
-        currents = [d["i"] for d in weld_data]
+    # If ESP32 summary is provided, use it directly
+    if esp32_summary:
+        energy_j = esp32_summary["energy"]
+        peak_current = esp32_summary["peak_current"]
+        duration_ms = esp32_summary["duration_us"] / 1000.0
+        log(f"✅ Using ESP32 weld summary: {peak_current:.1f}A peak, {energy_j:.2f}J, {duration_ms:.1f}ms")
     else:
-        # Format from ADC: {"timestamps": [...], "voltage": [...], "current": [...]}
-        timestamps = weld_data.get("timestamps", [])
-        voltages = weld_data.get("voltage", [])
-        currents = weld_data.get("current", [])
+        # Fallback: calculate from weld_data
+        # Handle both formats: list of dicts or dict of lists
+        if isinstance(weld_data, list):
+            # Format from ESP32 WDATA: [{"t": ..., "v": ..., "i": ...}, ...]
+            timestamps = [d["t"] / 1000.0 for d in weld_data]  # Convert ms to seconds
+            voltages = [d["v"] for d in weld_data]
+            currents = [d["i"] for d in weld_data]
+        else:
+            # Format from ADC: {"timestamps": [...], "voltage": [...], "current": [...]}
+            timestamps = weld_data.get("timestamps", [])
+            voltages = weld_data.get("voltage", [])
+            currents = weld_data.get("current", [])
 
-    # Calculate stats
-    energy_j = 0.0
-    if len(currents) > 1 and len(timestamps) > 1:
-        # Integrate I²R over time
-        for j in range(len(currents) - 1):
-            dt = timestamps[j+1] - timestamps[j]
-            i_avg = (currents[j] + currents[j+1]) / 2.0
-            energy_j += (i_avg ** 2) * TOTAL_RESISTANCE_OHM * dt
+        # Calculate stats
+        energy_j = 0.0
+        if len(currents) > 1 and len(timestamps) > 1:
+            # Integrate I²R over time
+            for j in range(len(currents) - 1):
+                dt = timestamps[j+1] - timestamps[j]
+                i_avg = (currents[j] + currents[j+1]) / 2.0
+                energy_j += (i_avg ** 2) * TOTAL_RESISTANCE_OHM * dt
 
-    peak_current = max(currents) if currents else 0.0
-    duration_ms = (timestamps[-1] - timestamps[0]) * 1000 if len(timestamps) > 1 else 0.0
+        peak_current = max(currents) if currents else 0.0
+        duration_ms = (timestamps[-1] - timestamps[0]) * 1000 if len(timestamps) > 1 else 0.0
 
     # Save weld data
     filename = f"weld_{weld_counter:04d}.json"
     filepath = os.path.join(WELD_HISTORY_DIR, filename)
-    
+
     weld_record = {
         "weld_number": weld_counter,
         "timestamp": datetime.now().isoformat(),
@@ -302,16 +343,24 @@ def save_weld_history(weld_data):
         "settings": load_settings(),
         "data": weld_data
     }
-    
+
     with open(filepath, 'w') as f:
         json.dump(weld_record, f, indent=2)
-    
+
     # Clean up old welds
     weld_files = sorted([f for f in os.listdir(WELD_HISTORY_DIR) if f.startswith("weld_")])
     if len(weld_files) > MAX_WELD_HISTORY:
         for old_file in weld_files[:-MAX_WELD_HISTORY]:
             os.remove(os.path.join(WELD_HISTORY_DIR, old_file))
-    
+
+    # Update counter in settings
+    settings = load_settings()
+    settings['weld_counter'] = weld_counter
+    save_settings(settings)
+
+    log(f"Weld #{weld_counter} saved: {energy_j:.2f}J, {peak_current:.1f}A peak, {duration_ms:.1f}ms")
+
+    return weld_record
     # Update counter in settings
     settings = load_settings()
     settings['weld_counter'] = weld_counter
@@ -663,16 +712,13 @@ if __name__ == '__main__':
     
     # ADS1256 now on ESP32 - no Pi initialization needed
     # ADS1256 now on ESP32 - no Pi initialization needed
-    # Initialize ESP32 link
+      # Initialize ESP32 link
     log("Initializing ESP32 link...")
     esp_link = ESP32Link(
-        port='/dev/serial0',
-        baudrate=115200,
-        status_callback=on_esp_status,
-        cells_callback=on_esp_cells,
-        log_callback=on_esp_log
-    )
-    
+       host='192.168.68.65',
+       port=8888,
+       status_callback=on_esp_status,
+    )    
     if esp_link.start():
         log("✅ ESP32 link started")
         

@@ -16,3 +16,18 @@ server/settings.json
 
 # Logs
 *.log
+# Local scratch / experiments (ESP32 + server)
+esp32/%Run
+esp32/add_tcp_to_main.py
+esp32/add_wifi.py
+esp32/fix_tcp_globals.py
+esp32/main.py.broken
+esp32/main.py.current
+esp32/main_clean.py
+esp32/main_from_esp.py
+esp32/main_from_esp32.py
+esp32/main_with_tcp.py
+esp32/main_working.py
+esp32/tcp_from_esp.py
+esp32/tcp_server.py
+server/esp_link.py.broken_backup

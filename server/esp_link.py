@@ -1,253 +1,214 @@
-#!/usr/bin/env python3
-"""
-ESP32 Serial Communication Bridge
-Parses STATUS, CELLS, DBG messages
-Sends control commands to ESP32
-"""
-
-import serial
+import socket
 import threading
 import time
-import re
-from collections import deque
+import traceback
 
 class ESP32Link:
-    def __init__(self, port='/dev/ttyUSB0', baudrate=115200, status_callback=None, cells_callback=None, log_callback=None):
+    def __init__(self, host='192.168.68.65', port=8888,
+                 status_callback=None, weld_data_callback=None, fired_callback=None):
+        self.host = host
         self.port = port
-        self.baudrate = baudrate
-        self.ser = None
+        self.sock = None
         self.running = False
         self.thread = None
-        
-        # Callbacks
         self.status_callback = status_callback
-        self.cells_callback = cells_callback
-        self.log_callback = log_callback
-        
-        # Connection state
+        self.weld_data_callback = weld_data_callback
+        self.fired_callback = fired_callback
+        self.last_status = {}
+        self.last_cells = {}
         self.connected = False
-        self.last_rx_time = 0
-        
-    def log(self, msg):
-        """Log message via callback or print"""
-        if self.log_callback:
-            self.log_callback(f"[ESP32] {msg}")
-        else:
-            print(f"[ESP32] {msg}", flush=True)
-    
-    def connect(self):
-        """Open serial connection"""
-        try:
-            self.ser = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=0.1,
-                write_timeout=1.0
-            )
-            self.connected = True
-            self.log(f"Connected to {self.port} at {self.baudrate} baud")
-            return True
-        except Exception as e:
-            self.log(f"Failed to connect: {e}")
-            self.connected = False
-            return False
-    
-    def disconnect(self):
-        """Close serial connection"""
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=2.0)
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-        self.connected = False
-        self.log("Disconnected")
-    
+        self.last_data_time = time.time()
+
     def start(self):
-        """Start background read thread"""
-        if not self.connected:
-            if not self.connect():
-                return False
-        
+        if self.running:
+            return True  # already running
         self.running = True
-        self.thread = threading.Thread(target=self._read_loop, daemon=True)
+        self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
-        self.log("Read thread started")
+        print(f"[ESP32Link] Started TCP client thread for {self.host}:{self.port}")
         return True
-    
+
     def stop(self):
-        """Stop background thread"""
-        self.disconnect()
-    
-    def send_command(self, cmd):
-        """Send command to ESP32"""
-        if not self.connected or not self.ser:
-            self.log(f"Cannot send command (not connected): {cmd}")
+        self.running = False
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+        if self.thread:
+            self.thread.join(timeout=2)
+        print("[ESP32Link] Stopped")
+
+    def send_command(self, cmd: str) -> bool:
+        """Send a command to the ESP32 over TCP."""
+        if not self.sock:
+            print(f"[ESP32Link] Cannot send '{cmd}': not connected")
             return False
-        
         try:
-            self.ser.write(f"{cmd}\n".encode('utf-8'))
-            self.log(f"TX: {cmd}")
+            msg = (cmd.strip() + "\n").encode("utf-8")
+            self.sock.sendall(msg)
+            print(f"[ESP32Link] Sent: {cmd}")
             return True
         except Exception as e:
-            self.log(f"Send error: {e}")
-            self.connected = False
+            print(f"[ESP32Link] Send error: {e}")
             return False
-    
-    def _read_loop(self):
-        """Background thread to read serial data"""
-        line_buffer = ""
-        
+
+    def _run(self):
+        """Main worker thread: connect, read lines, parse, callback."""
+        buffer = ""
         while self.running:
             try:
-                if not self.ser or not self.ser.is_open:
-                    time.sleep(0.1)
-                    continue
-                
-                # Read available data
-                if self.ser.in_waiting > 0:
-                    chunk = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
-                    line_buffer += chunk
-                    
-                    # Process complete lines
-                    while '\n' in line_buffer:
-                        line, line_buffer = line_buffer.split('\n', 1)
-                        line = line.strip()
-                        if line:
-                            self._parse_line(line)
-                            self.last_rx_time = time.time()
-                else:
-                    time.sleep(0.01)
-                
-                # Check for timeout (no data for 5 seconds)
-                if self.connected and (time.time() - self.last_rx_time) > 5.0:
-                    self.log("⚠️ No data received for 5 seconds")
-                    self.last_rx_time = time.time()  # Reset to avoid spam
-                
+                print(f"[ESP32Link] Connecting to {self.host}:{self.port}...")
+                self.sock = socket.create_connection((self.host, self.port), timeout=5.0)
+                self.sock.settimeout(1.0)
+                self.connected = True
+                self.last_data_time = time.time()
+                print(f"[ESP32Link] ✓ Connected to {self.host}:{self.port}")
+
+                while self.running:
+                    try:
+                        chunk = self.sock.recv(4096)
+                        if not chunk:
+                            print("[ESP32Link] Connection closed by ESP32")
+                            break
+
+                        self.last_data_time = time.time()
+                        buffer += chunk.decode("utf-8", errors="ignore")
+
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            if line:
+                                self._handle_line(line)
+
+                    except socket.timeout:
+                        # no data yet; warn if we’ve been idle too long
+                        if time.time() - self.last_data_time > 5:
+                            print("[ESP32Link] ⚠️ No data received for 5 seconds")
+                            self.last_data_time = time.time()
+                        continue
+                    except Exception as e:
+                        print(f"[ESP32Link] Read error: {e}")
+                        traceback.print_exc()
+                        break
+
             except Exception as e:
-                self.log(f"Read error: {e}")
+                print(f"[ESP32Link] Connection error: {e}")
+            finally:
                 self.connected = False
-                time.sleep(1.0)
-    
-    def _parse_line(self, line):
-        """Parse incoming line from ESP32"""
-        # STATUS message: STATUS,enabled=1,state=IDLE,vpack=8.84,i=0.0,cooldown_ms=0,pulse_ms=50
+                if self.sock:
+                    try:
+                        self.sock.close()
+                    except Exception:
+                        pass
+                    self.sock = None
+
+                if self.running:
+                    time.sleep(3)
+
+        print("[ESP32Link] Worker thread exiting")
+
+    def _handle_line(self, line: str):
+        print(f"[ESP32Link] RX: {line}")
+        """Parse a line from the ESP32 and trigger callbacks."""
+        # Debug / heartbeat
+        if line.startswith("DBG ") or line.startswith("HB:") or line.startswith("WELCOME"):
+            return
+
         if line.startswith("STATUS,"):
-            self._parse_status(line)
-        
-        # CELLS message: CELLS,V1=3.012,V2=5.901,V3=8.845,C1=3.012,C2=2.889,C3=2.944
+            # Example:
+            # STATUS,enabled=1,state=OFF,vpack=8.94,i=-0.003,temp=17.2,cooldown_ms=0,pulse_ms=10
+            parts = line.strip().split(",")[1:]  # skip "STATUS"
+            data = {}
+            for p in parts:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    data[k] = v
+            self.last_status = data
+            self._emit_status_update()
+
         elif line.startswith("CELLS,"):
-            self._parse_cells(line)
-        
-        # DBG message: DBG ...
+            parts = line.split(",")[1:]
+            data = {}
+            for p in parts:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    data[k] = v
+            self.last_cells = data
+            self._emit_status_update()
+
         elif line.startswith("WDATA,"):
-            self._parse_wdata(line)
+            if self.weld_data_callback:
+                try:
+                    self.weld_data_callback(line)
+                except Exception as e:
+                    print(f"[ESP32Link] weld_data_callback error: {e}")
+                    traceback.print_exc()
 
-        elif line.startswith("WDATA_END,"):
-            self._parse_wdata_end(line)
+        elif line.startswith("FIRED"):
+            if self.fired_callback:
+                try:
+                    self.fired_callback()
+                except Exception as e:
+                    print(f"[ESP32Link] fired_callback error: {e}")
+                    traceback.print_exc()
 
+        elif line.startswith("OK"):
+            # Command ack
+            return
 
-        # OK responses from ESP32
-        elif line.startswith("OK,"):
-            self.log(f"✅ {line}")
-
-        # Error responses from ESP32
-        elif line.startswith("ERR,"):
-            self.log(f"❌ {line}")
-
-        elif line.startswith("DBG"):
-            self.log(line)
-        
-        # Other messages
         else:
-            self.log(f"RX: {line}")
-    
-    def _parse_status(self, line):
-        """Parse STATUS message"""
+            # Unknown line – log
+            print(f"[ESP32Link] Unhandled line: {line}")
+
+    def _emit_status_update(self):
+        """Combine STATUS + CELLS and call status_callback."""
+        if not self.status_callback:
+            return
+        if not self.last_status or not self.last_cells:
+            return
+
         try:
-            # Extract key=value pairs
-            data = {}
-            parts = line.split(',')[1:]  # Skip "STATUS"
-            
-            for part in parts:
-                if '=' in part:
-                    key, val = part.split('=', 1)
-                    key = key.strip()
-                    val = val.strip()
-                    
-                    # Convert types
-                    if key == 'enabled':
-                        data[key] = (val == '1' or val.lower() == 'true')
-                    elif key == 'state':
-                        data[key] = val
-                    elif key in ['vpack', 'i', 'temp']:
-                        data[key] = float(val)
-                    elif key in ['cooldown_ms', 'pulse_ms']:
-                        data[key] = int(val)
-            
-            # Call callback
-            if self.status_callback:
-                self.status_callback(data)
-        
+            def fget(d, key, default=0.0):
+                try:
+                    val = d.get(key, str(default))
+                    if val in ("NaN", "nan", ""):
+                        return default
+                    return float(val)
+                except Exception:
+                    return default
+
+            raw_temp = fget(self.last_status, "temp")
+
+            # Simple calibration against Fluke 87V:
+            # Ambient: Pi ~16.4 °C, Fluke ~21.3 °C  => offset ≈ +5.0 °C
+            cal_temp = raw_temp + 5.0
+
+            payload = {
+                "vpack": fget(self.last_status, "vpack"),
+                "temp": cal_temp,
+                "current": fget(self.last_status, "i"),
+                "state": self.last_status.get("state", "OFF"),
+                "cooldown_ms": int(fget(self.last_status, "cooldown_ms", 0)),
+                "pulse_ms": int(fget(self.last_status, "pulse_ms", 10)),
+
+                # Individual cell voltages from CELLS line
+                "C1": fget(self.last_cells, "C1"),
+                "C2": fget(self.last_cells, "C2"),
+                "C3": fget(self.last_cells, "C3"),
+
+                # Also expose cumulative voltages, in case the UI uses these
+                "V1": fget(self.last_cells, "V1"),
+                "V2": fget(self.last_cells, "V2"),
+                "V3": fget(self.last_cells, "V3"),
+
+                "esp_connected": self.connected,
+            }
+
+            self.status_callback(payload)
+
         except Exception as e:
-            self.log(f"Failed to parse STATUS: {e}")
-    
-    def _parse_cells(self, line):
-        """Parse CELLS message"""
-        try:
-            # Extract key=value pairs
-            data = {}
-            parts = line.split(',')[1:]  # Skip "CELLS"
-            
-            for part in parts:
-                if '=' in part:
-                    key, val = part.split('=', 1)
-                    key = key.strip()
-                    val = val.strip()
-                    data[key] = float(val)
-            
-            # Call callback
-            if self.cells_callback:
-                self.cells_callback(data)
-        
-        except Exception as e:
-            self.log(f"Failed to parse CELLS: {e}")
-
-    def _parse_wdata(self, line):
-        """Parse WDATA - forward to log callback for app.py to handle"""
-        if self.log_callback:
-            self.log_callback(line)
-
-    def _parse_wdata_end(self, line):
-        """Parse WDATA_END - forward to log callback for app.py to handle"""
-        if self.log_callback:
-            self.log_callback(line)
-
-
-# Test code
-if __name__ == '__main__':
-    def on_status(data):
-        print(f"STATUS: {data}")
-    
-    def on_cells(data):
-        print(f"CELLS: {data}")
-    
-    def on_log(msg):
-        print(msg)
-    
-    link = ESP32Link(
-        port='/dev/ttyUSB0',
-        status_callback=on_status,
-        cells_callback=on_cells,
-        log_callback=on_log
-    )
-    
-    if link.start():
-        print("ESP32 link started. Press Ctrl+C to exit.")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nStopping...")
-            link.stop()
-    else:
-        print("Failed to start ESP32 link")
+            print(f"[ESP32Link] _emit_status_update error: {e}")
+            traceback.print_exc()
