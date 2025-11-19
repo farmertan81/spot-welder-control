@@ -31,3 +31,8 @@ esp32/main_working.py
 esp32/tcp_from_esp.py
 esp32/tcp_server.py
 server/esp_link.py.broken_backup
+# Local ESP32 firmware backups / pulls
+esp32/*.pre_esp_pull_*
+esp32/*.pre_git_sync_*
+esp32/main_from_esp_live.py
+esp32/wifi_config_from_esp_live.py
