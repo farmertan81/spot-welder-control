@@ -60,8 +60,7 @@ try:
         print("✓ TCP server started on port 8888")
         try:
             print("✓ TCP server started on %s:8888" % wifi_ip)
-        except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+        except Exception:
             pass
     else:
         print("TCP: start() returned False")
@@ -72,7 +71,7 @@ except Exception as e:
     tcp_server = None
 
 # ---- DEBUG TOGGLE ----
-DEBUG = True  # Set False to quiet detailed telemetry
+DEBUG = False  # Set False to quiet detailed telemetry
 
 def dbg(msg: str):
     if DEBUG:
@@ -105,26 +104,28 @@ pedal_state = 1  # 1=idle, 0=pressed
 # ---- Persistent weld pulse (used by pedal and can be set over ASCII) ----
 PULSE_MS_DEFAULT = 10
 PULSE_MS = PULSE_MS_DEFAULT
+
 # Thermistor on GPIO8
 THERM_PIN = 8
-try:
-    therm_adc = ADC(Pin(THERM_PIN))
-    therm_adc.atten(ADC.ATTN_11DB)  # 0-3.3V range
-    print("THERM: ADC init OK on GPIO%d" % THERM_PIN)
-except Exception as e:
-    therm_adc = None
-    print("THERM: ADC init FAILED:", e)
+therm_adc = ADC(Pin(THERM_PIN))
+therm_adc.atten(ADC.ATTN_11DB)  # 0-3.3V range
 
-# Thermistor constants
+# Thermistor constants (CALIBRATED - your proven values)
 SERIES_RESISTOR = 10000
 THERMISTOR_NOMINAL = 173000
 TEMPERATURE_NOMINAL = 20
 BETA = 3950
 
-TEMP_EMA_ALPHA = 0.05
-TEMP_OUTLIER_THRESHOLD = 5.0
+# Thermistor smoothing (Klipper-style)
+TEMP_EMA_ALPHA = 0.05  # Lower = smoother (0.05-0.2 typical)
+TEMP_OUTLIER_THRESHOLD = 5.0  # Reject readings >5°C from current
 temp_ema = None
 temp_last_valid = None
+
+# System enable latch (short-press toggle)
+system_enabled = True
+button_last_state = 1
+button_pressed_ms = 0
 button_debounce_ms = 0
 long_press_fired = False
 
@@ -156,8 +157,7 @@ time.sleep(0.75)
 # ---- SAFE MODE (hold BOOT=GPIO0 low during reset) ----
 try:
     SAFE_MODE = (Pin(0, Pin.IN, Pin.PULL_UP).value() == 0)
-except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+except Exception:
     SAFE_MODE = False
 if SAFE_MODE:
     print("SAFE MODE: skipping INA and charger logic; REPL available.")
@@ -175,8 +175,7 @@ if not SAFE_MODE:
         if ev:
             try:
                 _ = sys.stdin.read(1)  # consume one byte
-            except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+            except Exception:
                 pass
             ESCAPE_MODE = True
             break
@@ -253,8 +252,7 @@ def uart_try_read_line():
                 return line.decode('utf-8').strip()
             except:
                 return ''
-    except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+    except Exception:
         pass
     return None
 
@@ -281,25 +279,22 @@ def print_both(s: str):
 # ---- Thermistor reading ----
 def read_thermistor_temp():
     global temp_ema, temp_last_valid
-    print_both("THERM: FUNC ENTER")
-    if therm_adc is None:
-        print_both("THERM: therm_adc is None")
-        return temp_last_valid if temp_last_valid is not None else float('nan')
     try:
         adc_value = therm_adc.read()
-        print_both("THERM: raw ADC = %s" % adc_value)
-        if adc_value is None:
-            return temp_last_valid if temp_last_valid is not None else float('nan')
-
         voltage = (adc_value / 4095.0) * 3.3
-        print_both("THERM: voltage = %.3f V" % voltage)
+        #print("THERM_DBG: adc=%s, V=%.3f" % (adc_value, voltage))
 
-        if voltage >= 3.3 or voltage <= 0.0:
-            print_both("THERM: voltage out of range")
-            return temp_last_valid if temp_last_valid is not None else float('nan')
+        # If ADC returned None or 0, bail
+        if adc_value is None:
+            #print("THERM_DBG: adc_value is None")
+            return float('nan')
+
+        if voltage <= 0.0 or voltage >= 3.3:
+            #print("THERM_DBG: voltage out of range")
+            return float('nan')
 
         resistance = SERIES_RESISTOR * voltage / (3.3 - voltage)
-        print_both("THERM: R_therm = %.1f ohm" % resistance)
+        #print("THERM_DBG: R_therm=%.1f ohms" % resistance)
 
         steinhart = resistance / THERMISTOR_NOMINAL
         steinhart = math.log(steinhart)
@@ -307,22 +302,25 @@ def read_thermistor_temp():
         steinhart += 1.0 / (TEMPERATURE_NOMINAL + 273.15)
         steinhart = 1.0 / steinhart
         steinhart -= 273.15
+        #print("THERM_DBG: raw_temp=%.2f C" % steinhart)
 
-        if temp_last_valid is not None and abs(steinhart - temp_last_valid) > TEMP_OUTLIER_THRESHOLD:
-            print_both("THERM: outlier (%.1f vs %.1f)" % (steinhart, temp_last_valid))
-            return temp_last_valid
-
+        # Outlier rejection
+        if temp_last_valid is not None:
+            if abs(steinhart - temp_last_valid) > TEMP_OUTLIER_THRESHOLD:
+                #print("THERM_DBG: outlier, using last_valid=%.2f" % temp_last_valid)
+                return temp_last_valid  # Reject spike, return last good value
+        
+        # Exponential moving average
         if temp_ema is None:
-            temp_ema = steinhart
+            temp_ema = steinhart  # First reading
         else:
-            temp_ema = TEMP_EMA_ALPHA * steinhart + (1 - TEMP_EMA_ALPHA) * temp_ema
-
+            temp_ema = (TEMP_EMA_ALPHA * steinhart) + ((1 - TEMP_EMA_ALPHA) * temp_ema)
+        
         temp_last_valid = temp_ema
-        t_out = round(temp_ema, 1)
-        print_both("THERM: TEMP = %.1f C" % t_out)
-        return t_out
+        #print("THERM_DBG: ema=%.2f C" % temp_ema)
+        return round(temp_ema, 1)
     except Exception as e:
-        print_both("THERM: EXCEPTION: %s" % repr(e))
+        #print("THERM_DBG: EXCEPTION:", repr(e))
         return temp_last_valid if temp_last_valid is not None else float('nan')
 
 # ---- INA226 / Scaling ----
@@ -384,8 +382,7 @@ def i2c_scan():
 def ina_present():
     try:
         return (i2c is not None) and (INA_ADDR in i2c_scan())
-    except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+    except Exception:
         return False
 
 def ina_write16(reg, val):
@@ -409,8 +406,7 @@ def i2c_read_u16(reg):
             if not ina_present():
                 recover_i2c_and_reinit()
             time.sleep(0.01)
-        except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+        except Exception:
             break
     return None
 
@@ -476,8 +472,7 @@ def ina_init():
 
         dbg("Vraw=%.3f V  Vscaled=%.3f V  Scale=%.5f" % (v_raw, v_scaled, VBUS_SCALE.get(INA_ADDR, 1.0)))
         dbg("Ishunt=%.3f A  Ireg=%.3f A  (raw_shunt=%d)" % (i_phys, i_inareg, raw_sh))
-    except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+    except Exception:
         pass
 
     t0 = time.ticks_ms()
@@ -576,8 +571,7 @@ def do_weld_ms(pulse_ms):
     if pulse_ms > 5000: pulse_ms = 5000
     try:
         prev = led[0]
-    except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+    except Exception:
         prev = (0,0,0)
     led_red()
 
@@ -665,8 +659,7 @@ def do_weld_ms(pulse_ms):
     try:
         led[0] = prev
         led.write()
-    except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+    except Exception:
         pass
 
     next_weld_ok_at = time.ticks_add(time.ticks_ms(), WELD_LOCKOUT_MS)
@@ -736,8 +729,7 @@ def usb_try_read_line():
         return None
     try:
         data = sys.stdin.read()
-    except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+    except Exception:
         return None
     if not data:
         return None
@@ -770,7 +762,6 @@ def cmd_handle(line):
             return
 
         if up == "GET_TEMP":
-            print_both("ABOUT TO CALL read_thermistor_temp()")
             temp = read_thermistor_temp()
             if temp == temp:
                 print_both("TEMP,%.1f" % temp)
@@ -781,7 +772,6 @@ def cmd_handle(line):
         if up == "GET_STATUS":
             v_pack = read_voltage_filtered()
             i_now = ina_current_avg(2, 0.005) - I_OFFSET
-            print_both("ABOUT TO CALL read_thermistor_temp()")
             temp = read_thermistor_temp()
             state = ("DISABLED" if not system_enabled else
                      ("SAFE" if SAFE_MODE else
@@ -789,16 +779,9 @@ def cmd_handle(line):
                        ("ON" if FET_CHARGE.value() else "OFF"))))
             vp = ("%.3f" % v_pack) if (v_pack == v_pack) else "NaN"
             ip = ("%.3f" % i_now) if (i_now == i_now) else "NaN"
-
-            # Read thermistor temperature for STATUS
-            temp_val = read_thermistor_temp()
-            if isinstance(temp_val, float) and (temp_val == temp_val):
-                t_str = "%.1f" % temp_val
-            else:
-                t_str = "NaN"
-
+            tp = ("%.1f" % temp) if (temp == temp) else "NaN"
             print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d,pulse_ms=%d" %
-                       (1 if system_enabled else 0, state, vp, ip, t_str,
+                       (1 if system_enabled else 0, state, vp, ip, tp,
                         max(0, time.ticks_diff(next_weld_ok_at, time.ticks_ms())), PULSE_MS))
             return
 
@@ -852,8 +835,7 @@ def cmd_handle(line):
                 return
             try:
                 ms = int(float(parts[1]))
-            except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+            except Exception:
                 print_both("ERR,BAD_MS")
                 return
             if ms < 1: ms = 1
@@ -863,21 +845,13 @@ def cmd_handle(line):
             # Emit STATUS immediately so monitor updates instantly
             v_pack = read_voltage_filtered()
             i_now = ina_current_avg(2, 0.005) - I_OFFSET
-            print_both("ABOUT TO CALL read_thermistor_temp()")
             temp = read_thermistor_temp()
             state = ("DISABLED" if not system_enabled else ("ON" if FET_CHARGE.value() else "OFF"))
             vp = ("%.3f" % v_pack) if (v_pack == v_pack) else "NaN"
             ip = ("%.3f" % i_now) if (i_now == i_now) else "NaN"
-
-            # Read thermistor temperature for STATUS
-            temp_val = read_thermistor_temp()
-            if isinstance(temp_val, float) and (temp_val == temp_val):
-                t_str = "%.1f" % temp_val
-            else:
-                t_str = "NaN"
-
+            tp = ("%.1f" % temp) if (temp == temp) else "NaN"
             print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d,pulse_ms=%d" %
-                       (1 if system_enabled else 0, state, vp, ip, t_str,
+                       (1 if system_enabled else 0, state, vp, ip, tp,
                         max(0, time.ticks_diff(next_weld_ok_at, time.ticks_ms())), PULSE_MS))
             return
 
@@ -901,8 +875,7 @@ def cmd_handle(line):
                 if p1_ms > 5000: p1_ms = 5000
                 PULSE_MS = p1_ms
                 print_both("OK,SET_PATTERN_P1,%d" % p1_ms)
-            except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+            except Exception:
                 print_both("ERR,SET_PATTERN")
             return
 
@@ -911,8 +884,7 @@ def cmd_handle(line):
             if len(parts) == 2:
                 try:
                     ms = int(float(parts[1]))
-                except Exception as e:
-            print("DBG_THERM: EXCEPTION:", e)
+                except Exception:
                     print_both("ERR,BAD_MS")
                     return
             else:
@@ -1023,7 +995,6 @@ try:
         v_pack = read_voltage_filtered()
         current = ina_current_avg(3, 0.005) - I_OFFSET
         power = (v_pack if (v_pack == v_pack) else 0.0) * (current if (current == current) else 0.0)
-        print_both("ABOUT TO CALL read_thermistor_temp()")
         temp = read_thermistor_temp()
 
         # Charger control (voltage window)
@@ -1068,30 +1039,6 @@ try:
                 dbg("Vsh=%.6f V  I_phys=%.3f A  I_INA=%.3f A  CAL=0x%04X  I_SCALE=%.6f" %
                     (vsh, i_phys, i_inareg, cal_now, I_SCALE))
             
-            # Read thermistor temperature for STATUS
-            temp_val = read_thermistor_temp()
-            if isinstance(temp_val, float) and (temp_val == temp_val):
-                t_str = "%.1f" % temp_val
-            else:
-                t_str = "NaN"
-            # Read thermistor temperature for STATUS
-            temp_val = read_thermistor_temp()
-            if isinstance(temp_val, float) and (temp_val == temp_val):
-                t_str = "%.1f" % temp_val
-            else:
-                t_str = "NaN"
-            # Read thermistor temperature for STATUS
-            temp_val = read_thermistor_temp()
-            if isinstance(temp_val, float) and (temp_val == temp_val):
-                t_str = "%.1f" % temp_val
-            else:
-                t_str = "NaN"
-            # Read thermistor temperature for STATUS
-            temp_val = read_thermistor_temp()
-            if isinstance(temp_val, float) and (temp_val == temp_val):
-                t_str = "%.1f" % temp_val
-            else:
-                t_str = "NaN"
             print_both("STATUS,enabled=%d,state=%s,vpack=%s,i=%s,temp=%s,cooldown_ms=%d,pulse_ms=%d" %
                        (1 if system_enabled else 0, state, v_str, i_str, t_str,
                         max(0, time.ticks_diff(next_weld_ok_at, time.ticks_ms())), PULSE_MS))
