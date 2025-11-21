@@ -1,10 +1,10 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebSocketsClient.h>
 #include <esp_wifi.h>
 #include <Wire.h>
 #include "../lib/INA226/INA226.h"
 
+// -------------------- Pin Definitions --------------------
 #define FET_CHARGE    4
 #define FET_WELD1     5
 #define FET_WELD2     6
@@ -13,27 +13,29 @@
 #define I2C_SDA       3
 #define I2C_SCL       2
 
-const char* ssid = "Jaime's Wi-Fi Network";
+// -------------------- WiFi / TCP Settings ----------------
+const char* ssid     = "Jaime's Wi-Fi Network";
 const char* password = "jackaustin";
-const char* ws_host = "192.168.68.65";
-const uint16_t ws_port = 8080;
 
-WebSocketsClient webSocket;
+// TCP server for Pi (ESP32Link expects this)
+WiFiServer server(8888);
+WiFiClient client;
+
+// -------------------- INA226 -----------------------------
 INA226 ina(0x40);
 
-// Battery thresholds
-const float CHARGE_LIMIT = 9.02;
-const float CHARGE_RESUME = 8.70;
-const float HARD_LIMIT = 9.05;
+// -------------------- Battery thresholds -----------------
+const float CHARGE_LIMIT     = 9.02;
+const float CHARGE_RESUME    = 8.70;
+const float HARD_LIMIT       = 9.05;
 const float MIN_WELD_VOLTAGE = 7.80;
 
-// Weld settings
+// -------------------- Weld settings ----------------------
 uint16_t weld_duration_ms = 50;
-bool pedal_was_pressed = false;
 unsigned long last_weld_time = 0;
 const unsigned long WELD_COOLDOWN = 500;
 
-// Battery monitoring
+// -------------------- Battery monitoring -----------------
 float vpack = 0.0;
 float current_charge = 0.0;
 unsigned long last_battery_read = 0;
@@ -41,6 +43,13 @@ const unsigned long BATTERY_READ_INTERVAL = 100;  // 100ms
 
 // Forward declarations
 void fireWeld();
+void updateBattery();
+void controlCharger();
+void processCommand(String cmd);
+String buildStatus();
+void sendToPi(const String &msg);
+
+// -------------------- Helper: Build STATUS line ----------
 String buildStatus() {
     bool charge_on = digitalRead(FET_CHARGE);
     String state = charge_on ? "ON" : "OFF";
@@ -64,9 +73,17 @@ String buildStatus() {
     return status;
 }
 
-void updateBattery();
-void controlCharger();
+// -------------------- Helper: Send line to Pi ------------
+void sendToPi(const String &msg) {
+    if (client && client.connected()) {
+        client.println(msg);   // newline‑terminated
+        Serial.printf("[TCP] TX: %s\n", msg.c_str());
+    } else {
+        Serial.printf("[TCP] Not connected, drop: %s\n", msg.c_str());
+    }
+}
 
+// -------------------- Battery / Charger ------------------
 void updateBattery() {
     vpack = ina.readVoltage();
     current_charge = ina.readCurrent();
@@ -93,6 +110,7 @@ void controlCharger() {
     }
 }
 
+// -------------------- Weld Logic -------------------------
 void fireWeld() {
     // Check cooldown
     if (millis() - last_weld_time < WELD_COOLDOWN) {
@@ -133,11 +151,12 @@ void fireWeld() {
     
     Serial.printf("✅ Weld complete! Duration: %lu ms\n", actual_duration);
     
-    // Send weld data back
+    // Send weld result back to Pi
     String response = "FIRED," + String(actual_duration);
-    webSocket.sendTXT(response);
+    sendToPi(response);
 }
 
+// -------------------- Command Parser ---------------------
 void processCommand(String cmd) {
     Serial.printf("[CMD] Processing: %s\n", cmd.c_str());
     
@@ -146,48 +165,34 @@ void processCommand(String cmd) {
         if (duration > 0 && duration <= 200) {
             weld_duration_ms = duration;
             Serial.printf("✅ Weld duration set to %d ms\n", weld_duration_ms);
-            webSocket.sendTXT("ACK:SET_PULSE," + String(weld_duration_ms));
+            sendToPi("ACK:SET_PULSE," + String(weld_duration_ms));
         }
     }
     else if (cmd == "FIRE") {
+        // Pi should not use this in pedal‑only mode, but we keep for compatibility
         Serial.println("⚠️ FIRE command ignored (pedal-only mode)");
     }
     else if (cmd == "CHARGE_ON") {
         digitalWrite(FET_CHARGE, HIGH);
         Serial.println("✅ Charging ON (manual)");
-        webSocket.sendTXT("ACK:CHARGE_ON");
+        sendToPi("ACK:CHARGE_ON");
     }
     else if (cmd == "CHARGE_OFF") {
         digitalWrite(FET_CHARGE, LOW);
         Serial.println("✅ Charging OFF (manual)");
-        webSocket.sendTXT("ACK:CHARGE_OFF");
+        sendToPi("ACK:CHARGE_OFF");
     }
     else if (cmd == "STATUS") {
         String status = buildStatus();
-        webSocket.sendTXT(status);
+        sendToPi(status);
     }
 }
 
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
-    switch(type) {
-        case WStype_DISCONNECTED:
-            Serial.println("[WS] Disconnected");
-            break;
-        case WStype_CONNECTED:
-            Serial.println("[WS] Connected!");
-            webSocket.sendTXT("HELLO,ESP32");
-            break;
-        case WStype_TEXT:
-            Serial.printf("[WS] RX: %s\n", payload);
-            processCommand(String((char*)payload));
-            break;
-    }
-}
-
+// -------------------- Setup ------------------------------
 void setup() {
     Serial.begin(115200);
     delay(2000);
-    Serial.println("\n=== ESP32 Weld Controller v2.3 - BATTERY MONITOR ===");
+    Serial.println("\n=== ESP32 Weld Controller v2.4 - TCP LINK ===");
 
     pinMode(FET_CHARGE, OUTPUT);
     pinMode(FET_WELD1, OUTPUT);
@@ -217,8 +222,10 @@ void setup() {
 
     Serial.println("🦶 Pedal mode: ALWAYS ARMED");
 
+    // ---------------- WiFi ----------------
     WiFi.mode(WIFI_STA);
-    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+    esp_wifi_set_protocol(WIFI_IF_STA,
+        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
 
     Serial.print("Connecting to: ");
     Serial.println(ssid);
@@ -244,27 +251,45 @@ void setup() {
         Serial.print("IP: ");
         Serial.println(WiFi.localIP());
 
-        Serial.printf("Connecting WebSocket to %s:%u/ws\n", ws_host, ws_port);
-        webSocket.begin(ws_host, ws_port, "/ws");
-        webSocket.onEvent(webSocketEvent);
-        webSocket.setReconnectInterval(5000);
+        Serial.println("Starting TCP server on port 8888...");
+        server.begin();
+        server.setNoDelay(true);
     } else {
         Serial.println("\n❌ WiFi FAILED!");
     }
 }
 
+// -------------------- Loop -------------------------------
 void loop() {
+    // -------- TCP server: accept & read commands ----------
     if (WiFi.status() == WL_CONNECTED) {
-        webSocket.loop();
+        // Accept a new client if none / disconnected
+        if (!client || !client.connected()) {
+            WiFiClient newClient = server.available();
+            if (newClient) {
+                client = newClient;
+                Serial.println("[TCP] Client connected from " +
+                               client.remoteIP().toString());
+                // Optional hello
+                // sendToPi("HELLO,ESP32");
+            }
+        } else if (client.available()) {
+            String line = client.readStringUntil('\n');
+            line.trim();
+            if (line.length() > 0) {
+                Serial.printf("[TCP] RX: %s\n", line.c_str());
+                processCommand(line);
+            }
+        }
     }
     
-    // Update battery readings periodically
+    // -------- Battery readings & charger control ----------
     if (millis() - last_battery_read >= BATTERY_READ_INTERVAL) {
         last_battery_read = millis();
         updateBattery();
         controlCharger();
         
-        // Print status every 2 seconds
+        // Print & send status every 2 seconds
         static unsigned long last_print = 0;
         if (millis() - last_print >= 2000) {
             last_print = millis();
@@ -273,17 +298,16 @@ void loop() {
                          vpack, current_charge, 
                          charging ? "⚡CHARGING" : "⏸️IDLE");
 
-            // Send status to server via WebSocket
             String status = buildStatus();
-            webSocket.sendTXT(status);
+            sendToPi(status);
         }
     }
     
-    // Pedal handling (active-low, stronger debounce, one weld per press)
+    // -------- Pedal handling (active-low, debounced) ------
     static int pedal_last_raw = HIGH;            // last raw read
-    static int pedal_stable = HIGH;             // last debounced stable state
+    static int pedal_stable   = HIGH;            // last debounced stable state
     static unsigned long pedal_last_change_ms = 0;
-    const unsigned long PEDAL_DEBOUNCE_MS = 40; // slightly longer debounce
+    const unsigned long PEDAL_DEBOUNCE_MS = 40;  // debounce
 
     int pedal_raw = digitalRead(PEDAL_PIN);
     unsigned long now = millis();
@@ -294,7 +318,7 @@ void loop() {
         pedal_last_raw = pedal_raw;
     }
 
-    // Accept a new stable state only if it's held for PEDAL_DEBOUNCE_MS
+    // Accept a new stable state only if held long enough
     if ((now - pedal_last_change_ms) >= PEDAL_DEBOUNCE_MS) {
         if (pedal_raw != pedal_stable) {
             int prev_stable = pedal_stable;
@@ -309,12 +333,8 @@ void loop() {
                     Serial.println("🦶 Pedal pressed but cooldown active");
                 }
             }
-
-            // LOW -> HIGH (release) just arms us for next press;
-            // we don't need to do anything special here.
         }
     }
 
     delay(10);
-
 }
