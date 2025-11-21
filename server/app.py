@@ -740,3 +740,14 @@ if __name__ == '__main__':
     # Run server
     log("Starting Flask-SocketIO server on port 8080")
     socketio.run(app, host='0.0.0.0', port=8080, debug=False, allow_unsafe_werkzeug=True)
+
+@app.route('/api/reset_counter', methods=['POST'])
+def reset_counter_route():
+    """Reset weld counter to 0"""
+    global weld_counter
+    weld_counter = 0
+    settings = load_settings()
+    settings['weld_counter'] = 0
+    save_settings(settings)
+    log("Weld counter reset to 0")
+    return jsonify({"status": "ok"})
