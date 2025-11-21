@@ -4,7 +4,7 @@ import time
 import traceback
 
 class ESP32Link:
-    def __init__(self, host='192.168.68.71', port=8888,
+    def __init__(self, host='192.168.68.65', port=8888,
                  status_callback=None, weld_data_callback=None, fired_callback=None):
         self.host = host
         self.port = port
@@ -116,35 +116,24 @@ class ESP32Link:
             return
 
         if line.startswith("STATUS,"):
-            # Parse key=value pairs
-            parts = line.split(',')
-            status_data = {}
-            for p in parts[1:]:
-                if '=' in p:
-                    k, v = p.split('=', 1)
-                    status_data[k] = v
-            self.last_status = status_data
+            parts = line.split(",")[1:]
+            data = {}
+            for p in parts:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    data[k] = v
+            self.last_status = data
             self._emit_status_update()
 
         elif line.startswith("CELLS,"):
-            # Parse cell voltages
-            parts = line.split(',')
-            cells_data = {}
-            for p in parts[1:]:
-                if '=' in p:
-                    k, v = p.split('=', 1)
-                    cells_data[k] = v
-            self.last_cells = cells_data
+            parts = line.split(",")[1:]
+            data = {}
+            for p in parts:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    data[k] = v
+            self.last_cells = data
             self._emit_status_update()
-
-        elif "PEDAL:" in line:
-            # Route PEDAL lines (trigger weld, etc.) to on_esp_log
-            if self.weld_data_callback:
-                try:
-                    self.weld_data_callback(line)
-                except Exception as e:
-                    print(f"[ESP32Link] weld_data_callback error (PEDAL): {e}")
-                    traceback.print_exc()
 
         elif line.startswith("WDATA,"):
             if self.weld_data_callback:
@@ -154,21 +143,12 @@ class ESP32Link:
                     print(f"[ESP32Link] weld_data_callback error: {e}")
                     traceback.print_exc()
 
-        elif line.startswith("WDATA_END,"):
-            if self.weld_data_callback:
-                try:
-                    self.weld_data_callback(line)
-                except Exception as e:
-                    print(f"[ESP32Link] weld_data_callback error: {e}")
-                    traceback.print_exc()
-
         elif line.startswith("FIRED"):
-            # Route FIRED messages to the weld_data_callback / on_esp_log
-            if self.weld_data_callback:
+            if self.fired_callback:
                 try:
-                    self.weld_data_callback(line)
+                    self.fired_callback()
                 except Exception as e:
-                    print(f"[ESP32Link] weld_data_callback error (FIRED): {e}")
+                    print(f"[ESP32Link] fired_callback error: {e}")
                     traceback.print_exc()
 
         elif line.startswith("OK"):
@@ -176,14 +156,13 @@ class ESP32Link:
             return
 
         else:
-            # Unknown line – log
+            # Unknown line – ignore or log
             print(f"[ESP32Link] Unhandled line: {line}")
 
-    def _emit_status_update(self):
-        """Combine STATUS (and CELLS if present) and call status_callback."""
+"""Combine STATUS + CELLS and call status_callback."""
         if not self.status_callback:
             return
-        if not self.last_status:
+        if not self.last_status or not self.last_cells:
             return
 
         try:
@@ -196,23 +175,20 @@ class ESP32Link:
                 except Exception:
                     return default
 
-            raw_temp = fget(self.last_status, "temp")
-            cal_temp = raw_temp + 5.0  # simple calibration
-
             payload = {
                 "vpack": fget(self.last_status, "vpack"),
-                "temp": cal_temp,
+                "temperature": fget(self.last_status, "temp"),
                 "current": fget(self.last_status, "i"),
                 "state": self.last_status.get("state", "OFF"),
                 "cooldown_ms": int(fget(self.last_status, "cooldown_ms", 0)),
                 "pulse_ms": int(fget(self.last_status, "pulse_ms", 10)),
 
-                # Individual cell voltages from CELLS line (will just be 0.0 until we get CELLS)
+                # Individual cell voltages from CELLS line
                 "C1": fget(self.last_cells, "C1"),
                 "C2": fget(self.last_cells, "C2"),
                 "C3": fget(self.last_cells, "C3"),
 
-                # Also expose cumulative voltages
+                # Also expose cumulative voltages, in case the UI uses these
                 "V1": fget(self.last_cells, "V1"),
                 "V2": fget(self.last_cells, "V2"),
                 "V3": fget(self.last_cells, "V3"),

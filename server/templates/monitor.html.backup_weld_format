@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weld Monitor</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #333;
+        }
+        
+        h1 {
+            font-size: 2em;
+            color: #ff6b35;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 15px;
+        }
+        
+        .nav-links a {
+            color: #fff;
+            text-decoration: none;
+            padding: 10px 20px;
+            background: #333;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+        
+        .nav-links a:hover {
+            background: #ff6b35;
+        }
+        
+        .panel {
+            background: #2a2a2a;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            margin-bottom: 20px;
+        }
+        
+        .panel h2 {
+            margin-bottom: 15px;
+            color: #ff6b35;
+            font-size: 1.3em;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 400px;
+            background: #1a1a1a;
+            border-radius: 8px;
+            padding: 10px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .stat-card {
+            background: #333;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .stat-label {
+            font-size: 0.9em;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        
+        .weld-history {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .weld-item {
+            background: #333;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .weld-item:hover {
+            background: #444;
+        }
+        
+        .weld-item.active {
+            background: #ff6b35;
+        }
+        
+        .weld-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        
+        .weld-number {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        
+        .weld-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            font-size: 0.9em;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: #ff6b35;
+            color: #fff;
+        }
+        
+        .btn-primary:hover {
+            background: #ff8555;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .controls input {
+            padding: 8px;
+            background: #333;
+            border: 1px solid #444;
+            border-radius: 5px;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Weld Monitor</h1>
+            <div class="nav-links">
+                <a href="/control">Control</a>
+                <a href="/monitor">Monitor</a>
+                <a href="/logs">Logs</a>
+            </div>
+        </header>
+        
+        <!-- Live Stats -->
+        <div class="panel">
+            <h2>Current Weld Stats</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Energy</div>
+                    <div class="stat-value" id="energy">0 J</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Peak Current</div>
+                    <div class="stat-value" id="peak-current">0 A</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Duration</div>
+                    <div class="stat-value" id="duration">0 ms</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Weld #</div>
+                    <div class="stat-value" id="weld-num">0</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Waveform Chart -->
+        <div class="panel">
+            <h2>Waveform</h2>
+            <div class="controls">
+                <label>Y-Axis Max Current (A): <input type="number" id="y-max" value="3500" step="100"></label>
+                <button class="btn btn-primary" onclick="updateYAxis()">Update Scale</button>
+            </div>
+            <div class="chart-container">
+                <canvas id="waveform-chart"></canvas>
+            </div>
+        </div>
+        
+        <!-- Weld History -->
+        <div class="panel">
+            <h2>Weld History (Last 15)</h2>
+            <div class="weld-history" id="weld-history">
+                <p style="color: #666;">No welds yet...</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const socket = io();
+        
+        // 🚀 FULL MONTY ENHANCEMENTS - Custom Annotation Plugin
+        // Chart setup
+// 🚀 FULL MONTY CHART ENHANCEMENTS
+
+// Add annotation plugin configuration
+const annotationPlugin = {
+    id: 'customAnnotations',
+    afterDatasetsDraw(chart) {
+        const ctx = chart.ctx;
+        const chartArea = chart.chartArea;
+        const datasets = chart.data.datasets;
+        
+        if (!datasets[0].data || datasets[0].data.length === 0) return;
+        
+        const currentData = datasets[0].data;
+        
+        // Calculate metrics
+        const peakCurrent = Math.max(...currentData.map(d => d.y));
+        const riseTimeData = calculateRiseTime(currentData);
+        const weldStartIdx = currentData.findIndex(d => d.x >= 0);
+        
+        // Draw rise time annotation
+        if (riseTimeData) {
+            drawRiseTimeMarker(ctx, chart, riseTimeData);
+        }
+        
+        // Draw peak current line
+        drawPeakLine(ctx, chart, peakCurrent);
+        
+        // Draw weld start marker (t=0)
+        if (weldStartIdx >= 0) {
+            drawWeldStartMarker(ctx, chart, riseTimeData);
+        }
+        
+        // Draw metrics overlay
+        drawMetricsOverlay(ctx, chartArea, riseTimeData, peakCurrent);
+    }
+};
+
+function calculateRiseTime(data) {
+    // Find where current rises from ~0 to peak
+    const threshold = 10; // 10A threshold for "start"
+    const peakCurrent = Math.max(...data.map(d => d.y));
+    const peakThreshold = peakCurrent * 0.9; // 90% of peak
+    
+    let startIdx = data.findIndex(d => d.y > threshold);
+    let endIdx = data.findIndex(d => d.y > peakThreshold);
+    
+    if (startIdx >= 0 && endIdx > startIdx) {
+        return {
+            startTime: data[startIdx].x,
+            endTime: data[endIdx].x,
+            riseTime: data[endIdx].x - data[startIdx].x,
+            startCurrent: data[startIdx].y,
+            endCurrent: data[endIdx].y
+        };
+    }
+    return null;
+}
+
+function drawRiseTimeMarker(ctx, chart, riseData) {
+    const xScale = chart.scales.x;
+    const yScale = chart.scales.y;
+    
+    const x1 = xScale.getPixelForValue(riseData.startTime);
+    const x2 = xScale.getPixelForValue(riseData.endTime);
+    const y1 = yScale.getPixelForValue(riseData.startCurrent);
+    const y2 = yScale.getPixelForValue(riseData.endCurrent);
+    
+    // Draw arrow
+    ctx.save();
+    ctx.strokeStyle = '#00ff00';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    
+    // Draw label
+    ctx.fillStyle = '#00ff00';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText(`Rise: ${riseData.riseTime.toFixed(2)}ms`, x1 + 10, y1 - 10);
+    
+    ctx.restore();
+}
+
+function drawPeakLine(ctx, chart, peakCurrent) {
+    const xScale = chart.scales.x;
+    const yScale = chart.scales.y;
+    const chartArea = chart.chartArea;
+    
+    const y = yScale.getPixelForValue(peakCurrent);
+    
+    ctx.save();
+    ctx.strokeStyle = '#ff6b35';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    
+    ctx.beginPath();
+    ctx.moveTo(chartArea.left, y);
+    ctx.lineTo(chartArea.right, y);
+    ctx.stroke();
+    
+    // Label
+    ctx.fillStyle = '#ff6b35';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText(`Peak: ${peakCurrent.toFixed(1)}A`, chartArea.right - 100, y - 5);
+    
+    ctx.restore();
+}
+
+function drawWeldStartMarker(ctx, chart, riseData) {
+    const xScale = chart.scales.x;
+    const chartArea = chart.chartArea;
+
+    // Use actual weld start time from rise data, fallback to t=0
+    const weldStartTime = riseData ? riseData.startTime : 0;
+    const x = xScale.getPixelForValue(weldStartTime);
+
+    ctx.save();
+    ctx.strokeStyle = '#ffff00';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    ctx.moveTo(x, chartArea.top);
+    ctx.lineTo(x, chartArea.bottom);
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle = '#ffff00';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText('t=0', x + 5, chartArea.bottom - 10);
+
+    ctx.restore();
+}
+function drawMetricsOverlay(ctx, chartArea, riseData, peakCurrent) {
+    if (!riseData) return;
+    
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(chartArea.left + 10, chartArea.top + 10, 180, 80);
+    
+    ctx.fillStyle = '#00ff00';
+    ctx.font = 'bold 13px monospace';
+    ctx.fillText('📊 Weld Metrics', chartArea.left + 20, chartArea.top + 30);
+    
+    ctx.font = '12px monospace';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`Rise Time: ${riseData.riseTime.toFixed(2)} ms`, chartArea.left + 20, chartArea.top + 50);
+    ctx.fillText(`Peak: ${peakCurrent.toFixed(1)} A`, chartArea.left + 20, chartArea.top + 68);
+    
+    ctx.restore();
+}
+
+// Smoothing function
+function smoothData(data, windowSize = 3) {
+    if (data.length < windowSize) return data;
+    
+    const smoothed = [];
+    for (let i = 0; i < data.length; i++) {
+        const start = Math.max(0, i - Math.floor(windowSize / 2));
+        const end = Math.min(data.length, i + Math.ceil(windowSize / 2));
+        const window = data.slice(start, end);
+        const avg = window.reduce((sum, d) => sum + d.y, 0) / window.length;
+        smoothed.push({ x: data[i].x, y: avg });
+    }
+    return smoothed;
+}
+
+// Auto-zoom function
+function autoZoomChart(chart) {
+    const data = chart.data.datasets[0].data;
+    if (data.length === 0) return;
+    
+    const times = data.map(d => d.x);
+    const minTime = Math.min(...times);
+    const maxTime = Math.max(...times);
+    
+    // Add 10% padding
+    const padding = (maxTime - minTime) * 0.1;
+    
+    chart.options.scales.x.min = minTime - padding;
+    chart.options.scales.x.max = maxTime + padding;
+}
+
+        const ctx = document.getElementById('waveform-chart').getContext('2d');
+        const chart = new Chart(ctx, {
+            plugins: [annotationPlugin],
+            type: 'line',
+            data: {
+                datasets: [
+                    {
+                        label: 'Current (A)',
+                        data: [],
+                        borderColor: '#ff6b35',
+                        backgroundColor: 'rgba(255, 107, 53, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Voltage (V)',
+                        data: [],
+                        borderColor: '#2196F3',
+                        backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        title: {
+                            display: true,
+                            text: 'Time (ms)',
+                            color: '#fff'
+                        },
+                        ticks: { color: '#aaa' },
+                        grid: { color: "#444", lineWidth: 1, drawTicks: true }
+                    },
+                    y: {
+                        type: 'linear',
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: 'Current (A)',
+                            color: '#ff6b35'
+                        },
+                        ticks: { color: '#ff6b35' },
+                        grid: { color: "#444", lineWidth: 1, drawTicks: true },
+                        min: 0,
+                        max: 3500
+                    },
+                    y1: {
+                        type: 'linear',
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: 'Voltage (V)',
+                            color: '#2196F3'
+                        },
+                        ticks: { color: '#2196F3' },
+                        grid: { display: false },
+                        min: 0,
+                        max: 12
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: { color: '#fff' }
+                    }
+                }
+            }
+        });
+        
+        let currentWeldData = { timestamps: [], voltage: [], current: [] };
+        
+        // Socket events
+        socket.on('weld_data_point', (data) => {
+            const t_ms = data.t * 1000;  // Convert to ms
+            currentWeldData.timestamps.push(t_ms);
+            currentWeldData.voltage.push(data.v);
+            currentWeldData.current.push(data.i);
+            
+            // Update chart
+            chart.data.datasets[0].data.push({ x: t_ms, y: data.i });
+            chart.data.datasets[1].data.push({ x: t_ms, y: data.v });
+            chart.update('none');
+        });
+        
+        socket.on('weld_complete', (data) => {
+            // Update stats
+            document.getElementById('energy').textContent = data.energy_joules.toFixed(2) + ' J';
+            document.getElementById('peak-current').textContent = data.peak_current_amps.toFixed(1) + ' A';
+            document.getElementById('duration').textContent = data.duration_ms.toFixed(1) + ' ms';
+            document.getElementById('weld-num').textContent = data.weld_number;
+            
+            // Reload history
+            loadWeldHistory();
+            
+            // Clear for next weld
+            setTimeout(() => {
+                currentWeldData = { timestamps: [], voltage: [], current: [] };
+                chart.data.datasets[0].data = [];
+                chart.data.datasets[1].data = [];
+                chart.update();
+            }, 5000);
+        });
+        
+        socket.on('pedal_active', (data) => {
+            if (data.active) {
+                // Clear chart for new weld
+                currentWeldData = { timestamps: [], voltage: [], current: [] };
+                chart.data.datasets[0].data = [];
+                chart.data.datasets[1].data = [];
+                chart.update();
+            }
+        });
+        
+        // Load weld history
+        async function loadWeldHistory() {
+            const resp = await fetch('/api/weld_history');
+            const data = await resp.json();
+            
+            if (data.status === 'ok' && data.welds.length > 0) {
+                const container = document.getElementById('weld-history');
+                container.innerHTML = '';
+                
+                data.welds.forEach(weld => {
+                    const item = document.createElement('div');
+                    item.className = 'weld-item';
+                    item.onclick = () => loadWeldData(weld.filename);
+                    
+                    const timestamp = new Date(weld.timestamp).toLocaleString();
+                    
+                    item.innerHTML = `
+                        <div class="weld-header">
+                            <span class="weld-number">Weld #${weld.weld_number}</span>
+                            <span style="color: #aaa; font-size: 0.9em;">${timestamp}</span>
+                        </div>
+                        <div class="weld-stats">
+                            <div>⚡ ${weld.energy_joules.toFixed(2)} J</div>
+                            <div>📈 ${weld.peak_current_amps.toFixed(1)} A</div>
+                            <div>⏱️ ${weld.duration_ms.toFixed(1)} ms</div>
+                        </div>
+                    `;
+                    
+                    container.appendChild(item);
+                });
+            }
+        }
+        
+        // Load specific weld data
+        async function loadWeldData(filename, event) {
+            const resp = await fetch(`/api/weld_data/${filename}`);
+            const weld = await resp.json();
+            
+            if (weld.data) {
+                // Update stats
+                document.getElementById('energy').textContent = weld.energy_joules.toFixed(2) + ' J';
+                document.getElementById('peak-current').textContent = weld.peak_current_amps.toFixed(1) + ' A';
+                document.getElementById('duration').textContent = weld.duration_ms.toFixed(1) + ' ms';
+                document.getElementById('weld-num').textContent = weld.weld_number;
+                
+                // Update chart
+                chart.data.datasets[0].data = weld.data.timestamps.map((t, i) => ({
+                    x: t * 1000,
+                    y: weld.data.current[i]
+                }));
+                chart.data.datasets[1].data = weld.data.timestamps.map((t, i) => ({
+                    x: t * 1000,
+                    y: weld.data.voltage[i]
+                }));
+                // Apply smoothing
+                chart.data.datasets[0].data = smoothData(chart.data.datasets[0].data, 3);
+                // Auto-zoom to relevant data
+                autoZoomChart(chart);
+                chart.update();
+                
+                // Highlight selected
+                document.querySelectorAll('.weld-item').forEach(item => item.classList.remove('active'));
+                if (event && event.target) event.target.closest('.weld-item').classList.add('active');
+            }
+        }
+        
+        // Update Y-axis scale
+        function updateYAxis() {
+            const yMax = parseFloat(document.getElementById('y-max').value);
+            chart.options.scales.y.max = yMax;
+            chart.update();
+        }
+        
+        // Initialize
+        loadWeldHistory();
+    </script>
+</body>
+</html>

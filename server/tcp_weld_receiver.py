@@ -9,7 +9,7 @@ import threading
 import time
 
 class TCPWeldReceiver:
-    def __init__(self, esp32_ip='192.168.68.65', port=8081, data_callback=None, log_callback=None):
+    def __init__(self, esp32_ip='192.168.68.71', port=8081, data_callback=None, log_callback=None):
         self.esp32_ip = esp32_ip
         self.port = port
         self.data_callback = data_callback
