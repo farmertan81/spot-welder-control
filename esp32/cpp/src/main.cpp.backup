@@ -1,0 +1,90 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebSocketsClient.h>
+#include <esp_wifi.h>
+
+#define FET_CHARGE    4
+#define FET_WELD1     5
+#define FET_WELD2     6
+
+const char* ssid = "Jaime's Wi-Fi Network";
+const char* password = "jackaustin";
+const char* ws_host = "192.168.68.65";
+const uint16_t ws_port = 8080;
+
+WebSocketsClient webSocket;
+
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+    switch(type) {
+        case WStype_DISCONNECTED:
+            Serial.println("[WS] Disconnected");
+            break;
+        case WStype_CONNECTED:
+            Serial.println("[WS] Connected!");
+            break;
+        case WStype_TEXT:
+            Serial.printf("[WS] RX: %s\n", payload);
+            break;
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(2000);
+    Serial.println("\n=== ESP32 Weld Controller ===");
+
+    pinMode(FET_CHARGE, OUTPUT);
+    pinMode(FET_WELD1, OUTPUT);
+    pinMode(FET_WELD2, OUTPUT);
+    digitalWrite(FET_CHARGE, LOW);
+    digitalWrite(FET_WELD1, LOW);
+    digitalWrite(FET_WELD2, LOW);
+
+    WiFi.mode(WIFI_STA);
+    
+    // Force WPA2 only (not WPA3)
+    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+    
+    Serial.print("Connecting to: ");
+    Serial.println(ssid);
+    
+    WiFi.begin(ssid, password);
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+        
+        if (attempts % 10 == 0) {
+            Serial.print(" [");
+            Serial.print((int)WiFi.status());
+            Serial.print("] ");
+        }
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\n✅ WiFi CONNECTED!");
+        Serial.print("IP: ");
+        Serial.println(WiFi.localIP());
+        Serial.print("Channel: ");
+        Serial.println(WiFi.channel());
+
+        Serial.printf("Connecting WebSocket to %s:%u/ws\n", ws_host, ws_port);
+        webSocket.begin(ws_host, ws_port, "/ws");
+        webSocket.onEvent(webSocketEvent);
+        webSocket.setReconnectInterval(5000);
+    } else {
+        Serial.println("\n❌ WiFi FAILED!");
+        Serial.print("Status: ");
+        Serial.println((int)WiFi.status());
+    }
+}
+
+void loop() {
+    if (WiFi.status() == WL_CONNECTED) {
+        webSocket.loop();
+    }
+    delay(10);
+}

@@ -1,0 +1,35 @@
+    // Pedal handling (active-low, stronger debounce, one weld per press)
+    static int pedal_last_raw = HIGH;            // last raw read
+    static int pedal_stable = HIGH;             // last debounced stable state
+    static unsigned long pedal_last_change_ms = 0;
+    const unsigned long PEDAL_DEBOUNCE_MS = 40; // slightly longer debounce
+
+    int pedal_raw = digitalRead(PEDAL_PIN);
+    unsigned long now = millis();
+
+    // Track changes in the raw signal
+    if (pedal_raw != pedal_last_raw) {
+        pedal_last_change_ms = now;
+        pedal_last_raw = pedal_raw;
+    }
+
+    // Accept a new stable state only if it's held for PEDAL_DEBOUNCE_MS
+    if ((now - pedal_last_change_ms) >= PEDAL_DEBOUNCE_MS) {
+        if (pedal_raw != pedal_stable) {
+            int prev_stable = pedal_stable;
+            pedal_stable = pedal_raw;
+
+            // Active‑low: HIGH -> LOW is a clean "press"
+            if (prev_stable == HIGH && pedal_stable == LOW) {
+                if (now - last_weld_time >= WELD_COOLDOWN) {
+                    Serial.println("🦶 Pedal pressed -> trigger weld");
+                    fireWeld();
+                } else {
+                    Serial.println("🦶 Pedal pressed but cooldown active");
+                }
+            }
+
+            // LOW -> HIGH (release) just arms us for next press;
+            // we don't need to do anything special here.
+        }
+    }
