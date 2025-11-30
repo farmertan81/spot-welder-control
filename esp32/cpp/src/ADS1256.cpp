@@ -1,122 +1,133 @@
 #include "ADS1256.h"
 
-ADS1256::ADS1256(SPIClass* spi, uint8_t cs_pin, uint8_t drdy_pin) {
-    _spi = spi;
-    _cs_pin = cs_pin;
-    _drdy_pin = drdy_pin;
-    
-    // Calculate voltage per code
-    volts_per_code = (2.0 * Vref) / (FS * 2.0 * gain_adc);
-}
+// ---- ADS1256 command & register definitions ----
+enum {
+    CMD_WAKEUP  = 0x00,
+    CMD_RDATA   = 0x01,
+    CMD_RDATAC  = 0x03,
+    CMD_SDATAC  = 0x0F,
+    CMD_RREG    = 0x10,
+    CMD_WREG    = 0x50,
+    CMD_SELFCAL = 0xF0,
+    CMD_RESET   = 0xFE
+};
 
-bool ADS1256::begin() {
-    pinMode(_cs_pin, OUTPUT);
-    pinMode(_drdy_pin, INPUT);
+enum {
+    REG_STATUS = 0x00,
+    REG_MUX    = 0x01,
+    REG_ADCON  = 0x02,
+    REG_DRATE  = 0x03,
+};
+
+Ads1256::Ads1256(int csPin, int drdyPin)
+    : _cs(csPin), _drdy(drdyPin), _spi(nullptr)
+{}
+
+bool Ads1256::begin(SPIClass &spi) {
+    _spi = &spi;
+
+    pinMode(_cs, OUTPUT);
+    pinMode(_drdy, INPUT);
     csHigh();
-    
-    delay(100);
-    
-    // Reset
-    writeCmd(CMD_RESET);
-    delay(100);
-    
-    // Wait for DRDY
-    waitDRDY();
-    
-    // Stop continuous read
-    writeCmd(CMD_SDATAC);
-    delayMicroseconds(100);
-    
-    // Configure MUX for AIN2-AIN3
-    writeReg(REG_MUX, MUX_AIN2_AIN3);
-    
-    // Configure ADCON (PGA=1, buffer disabled)
-    writeReg(REG_ADCON, 0x00);
-    
-    // Set data rate to 30kSPS
-    writeReg(REG_DRATE, DRATE_30000SPS);
-    
-    // Self calibration
-    writeCmd(CMD_SELFCAL);
-    delay(500);
-    
-    Serial.println("✓ ADS1256 initialized");
+
+    // Basic reset
+    csLow();
+    delayMicroseconds(5);
+    sendCommand(CMD_RESET);
+    delay(2);
+    sendCommand(CMD_SDATAC);  // stop any continuous conversion
+    csHigh();
+    delay(2);
+
+    // Example config: 1000SPS, PGA=1
+    csLow();
+    writeRegister(REG_DRATE, 0x82);   // data rate (approx 1000SPS)
+    csHigh();
+
+    csLow();
+    writeRegister(REG_ADCON, 0x20);   // gain=1, clock out off
+    csHigh();
+
     return true;
 }
 
-int32_t ADS1256::readRaw() {
-    waitDRDY();
-    
+void Ads1256::startContinuous(uint8_t ch) {
+    if (!_spi) return;
+
+    // Single‑ended: AINp = ch, AINn = AINCOM (0x08)
+    uint8_t mux = (ch << 4) | 0x08;
     csLow();
-    _spi->transfer(CMD_RDATA);
-    delayMicroseconds(7);  // t6 delay
-    
-    uint8_t data[3];
-    data[0] = _spi->transfer(0x00);
-    data[1] = _spi->transfer(0x00);
-    data[2] = _spi->transfer(0x00);
+    writeRegister(REG_MUX, mux);
     csHigh();
-    
-    // Convert to signed 24-bit
-    int32_t result = ((int32_t)data[0] << 16) | ((int32_t)data[1] << 8) | data[2];
-    
-    // Sign extend
-    if (result & 0x800000) {
-        result |= 0xFF000000;
-    }
-    
-    return result;
-}
+    delayMicroseconds(10);
 
-float ADS1256::readCurrent() {
-    int32_t raw = readRaw();
-    float voltage = raw * volts_per_code;
-    float current = (voltage / G_AMC) / Rsh;
-    return current;
-}
-
-void ADS1256::writeCmd(uint8_t cmd) {
     csLow();
+    sendCommand(CMD_RDATAC);
+    csHigh();
+}
+
+void Ads1256::stopContinuous() {
+    if (!_spi) return;
+    csLow();
+    sendCommand(CMD_SDATAC);
+    csHigh();
+}
+
+bool Ads1256::readCurrentFast(float &amps) {
+    if (!_spi) return false;
+    if (!drdyLow()) return false;   // no new sample yet
+
+    long raw = readData();
+
+    // Placeholder scaling: we will replace this with your exact math
+    const float VREF   = 2.5f;      // adjust later
+    const float GAIN   = 16.0f;     // adjust to match your setup
+    const float RSHUNT = 0.00005f;  // 50 µΩ new shunt
+
+    float volts = (raw / 8388607.0f) * (VREF / GAIN); // ±Vref/gain full‑scale
+    amps = volts / RSHUNT;
+    return true;
+}
+
+// ---- Low‑level helpers ----
+
+void Ads1256::sendCommand(uint8_t cmd) {
+    _spi->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
     _spi->transfer(cmd);
-    csHigh();
-    delayMicroseconds(1);
+    _spi->endTransaction();
 }
 
-void ADS1256::writeReg(uint8_t reg, uint8_t value) {
-    csLow();
-    _spi->transfer(CMD_WREG | reg);
-    _spi->transfer(0x00);  // Write 1 register
+void Ads1256::writeRegister(uint8_t reg, uint8_t value) {
+    _spi->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
+    _spi->transfer(CMD_WREG | (reg & 0x0F));
+    _spi->transfer(0x00);     // write 1 register
     _spi->transfer(value);
-    csHigh();
-    delayMicroseconds(1);
+    _spi->endTransaction();
+    delayMicroseconds(5);
 }
 
-uint8_t ADS1256::readReg(uint8_t reg) {
-    csLow();
-    _spi->transfer(CMD_RREG | reg);
-    _spi->transfer(0x00);  // Read 1 register
-    delayMicroseconds(7);
-    uint8_t value = _spi->transfer(0x00);
-    csHigh();
-    return value;
+uint8_t Ads1256::readRegister(uint8_t reg) {
+    _spi->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
+    _spi->transfer(CMD_RREG | (reg & 0x0F));
+    _spi->transfer(0x00);     // read 1 register
+    delayMicroseconds(5);
+    uint8_t v = _spi->transfer(0xFF);
+    _spi->endTransaction();
+    return v;
 }
 
-void ADS1256::waitDRDY(uint32_t timeout_us) {
-    uint32_t start = micros();
-    while (digitalRead(_drdy_pin) == HIGH) {
-        if (micros() - start > timeout_us) {
-            Serial.println("⚠ ADS1256 DRDY timeout");
-            return;
-        }
+long Ads1256::readData() {
+    _spi->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
+    _spi->transfer(CMD_RDATA);
+    delayMicroseconds(5);
+    uint8_t b0 = _spi->transfer(0xFF);
+    uint8_t b1 = _spi->transfer(0xFF);
+    uint8_t b2 = _spi->transfer(0xFF);
+    _spi->endTransaction();
+
+    long raw = ((long)b0 << 16) | ((long)b1 << 8) | b2;
+    if (raw & 0x800000) {
+        raw |= 0xFF000000;   // sign‑extend 24‑bit
     }
-}
-
-void ADS1256::csLow() {
-    digitalWrite(_cs_pin, LOW);
-    delayMicroseconds(1);
-}
-
-void ADS1256::csHigh() {
-    digitalWrite(_cs_pin, HIGH);
-    delayMicroseconds(1);
+    return raw;
 }
