@@ -4,11 +4,11 @@
 #include <Wire.h>
 #include <math.h>
 #include "../lib/INA226/INA226.h"
+#include "Ads1256.h"
 
 // -------------------- Pin Definitions --------------------
-#define FET_CHARGE    4
-#define FET_WELD1     5
-#define FET_WELD2     6
+#define FET_CHARGE    5
+#define FET_WELD      4    // single GPIO feeding both weld drivers
 #define PEDAL_PIN     7
 
 #define I2C_SDA       3
@@ -28,6 +28,11 @@ INA226 ina(0x40);      // Vpack
 INA226 inaCell1(0x44); // cell 1 sense (node 1)
 INA226 inaCell2(0x41); // cell 2 sense (node 2)
 
+// -------------------- ADS1256 (weld current) -------------
+SPIClass spiAds(1);      // SPI1: SCK=40, MISO=38, MOSI=39
+Ads1256 ads(17, 18);     // CS=17, DRDY=18
+bool adsAvailable = false;
+
 // -------------------- Battery monitoring -----------------
 float vpack = 0.0;
 float current_charge = 0.0;
@@ -39,7 +44,7 @@ const unsigned long BATTERY_READ_INTERVAL = 100;  // 100ms
 const float CHARGE_LIMIT     = 9.02;
 const float CHARGE_RESUME    = 8.70;
 const float HARD_LIMIT       = 9.05;
-const float MIN_WELD_VOLTAGE = 7.80;
+const float MIN_WELD_VOLTAGE = 3.00;
 
 // -------------------- Weld settings ----------------------
 uint16_t weld_duration_ms = 50;
@@ -157,7 +162,6 @@ void updateTemperature() {
                    (1.0f - TEMP_EMA_ALPHA) * temp_ema;
     }
 
-    // Optional final offset if you ever want it:
     const float TEMP_OFFSET = 0.0f;   // change later if needed
     temperature_c = temp_ema + TEMP_OFFSET;
 }
@@ -229,7 +233,7 @@ void controlCharger() {
     }
 }
 
-// -------------------- Weld Logic -------------------------
+// -------------------- Weld Logic (with ADS1256 + WDATA) --
 void fireWeld() {
     if (millis() - last_weld_time < WELD_COOLDOWN) {
         Serial.println("⚠️ Cooldown active");
@@ -243,26 +247,116 @@ void fireWeld() {
 
     Serial.printf("🔥 FIRING %d ms weld! Vpack=%.2fV\n", weld_duration_ms, vpack);
 
+    // Turn OFF charger during weld
     digitalWrite(FET_CHARGE, LOW);
     delay(5);
 
-    digitalWrite(FET_WELD1, HIGH);
-    digitalWrite(FET_WELD2, HIGH);
+    // Start ADS1256 continuous mode on shunt channel (assume CH0 for now)
+    if (adsAvailable) {
+        ads.startContinuous(0);   // TODO: adjust channel once we know exact wiring
+        delayMicroseconds(100);
+        Serial.println("ADS1256: continuous mode started");
+    } else {
+        Serial.println("ADS1256: not available, weld will be voltage‑only logging");
+    }
 
-    unsigned long start = millis();
-    delay(weld_duration_ms);
-    unsigned long actual_duration = millis() - start;
+    unsigned long tStartUs = micros();
+    unsigned long tStartMs = millis();
 
-    digitalWrite(FET_WELD1, LOW);
-    digitalWrite(FET_WELD2, LOW);
+    digitalWrite(FET_WELD, HIGH);
+
+    float vStart = NAN;
+    float vEnd   = NAN;
+    float peakCurrent = 0.0f;
+    float energyJ = 0.0f;
+
+    unsigned long lastSampleUs = tStartUs;
+    uint32_t sampleCount = 0;
+
+    const float R_TOTAL = 0.010f;   // same 0.01 Ω used in MicroPython energy calc
+
+    while ((millis() - tStartMs) < weld_duration_ms) {
+        unsigned long nowUs = micros();
+        unsigned long dtUs  = nowUs - lastSampleUs;
+        lastSampleUs = nowUs;
+
+        // Use your existing pack voltage value
+        float v_now = vpack;
+
+        if (!isfinite(vStart)) {
+            vStart = v_now;
+        }
+        vEnd = v_now;
+
+        float amps = NAN;
+        bool haveCurrent = false;
+        if (adsAvailable) {
+            if (ads.readCurrentFast(amps)) {
+                haveCurrent = true;
+            }
+        }
+
+        if (haveCurrent) {
+            // WDATA,volts,current,time_us
+            char buf[96];
+            snprintf(buf, sizeof(buf), "WDATA,%.3f,%.1f,%lu",
+                     v_now, amps, (unsigned long)(nowUs - tStartUs));
+            sendToPi(String(buf));
+
+            // Energy integration (I^2 * R * dt)
+            float dt = dtUs / 1e6f;
+            float p_avg = amps * amps * R_TOTAL;
+            energyJ += p_avg * dt;
+
+            if (fabsf(amps) > fabsf(peakCurrent)) {
+                peakCurrent = amps;
+            }
+        } else {
+            // Voltage‑only sample
+            char buf[96];
+            snprintf(buf, sizeof(buf), "VDATA,%.3f,%lu",
+                     v_now, (unsigned long)(nowUs - tStartUs));
+            sendToPi(String(buf));
+        }
+
+        sampleCount++;
+        // Small delay so we don't spin at full CPU; ADS1256 DRATE controls real rate
+        delayMicroseconds(50);
+    }
+
+    digitalWrite(FET_WELD, LOW);
+
+    if (adsAvailable) {
+        ads.stopContinuous();
+        Serial.println("ADS1256: continuous mode stopped");
+    }
+
+    unsigned long tActualUs = micros() - tStartUs;
+    float vDrop = 0.0f;
+    if (isfinite(vStart) && isfinite(vEnd)) {
+        vDrop = vStart - vEnd;
+    }
+
+    // WDATA_END,sample_count,t_us,peak_current,energy_j,v_drop
+    char endBuf[128];
+    snprintf(endBuf, sizeof(endBuf),
+             "WDATA_END,%lu,%lu,%.1f,%.2f,%.3f",
+             (unsigned long)sampleCount,
+             (unsigned long)tActualUs,
+             peakCurrent,
+             energyJ,
+             vDrop);
+    sendToPi(String(endBuf));
 
     delay(10);
     controlCharger();
     last_weld_time = millis();
 
-    Serial.printf("✅ Weld complete! Duration: %lu ms\n", actual_duration);
+    Serial.printf("✅ Weld complete! Duration: %lu ms\n",
+                  (unsigned long)weld_duration_ms);
 
-    String response = "FIRED," + String(actual_duration);
+    // Keep the original FIRED message for Pi compatibility
+    String response = "FIRED," + String(weld_duration_ms);
     sendToPi(response);
 }
 
@@ -311,19 +405,26 @@ void setup() {
     Serial.println("\n=== ESP32 Weld Controller v2.4 - TCP LINK ===");
 
     pinMode(FET_CHARGE, OUTPUT);
-    pinMode(FET_WELD1, OUTPUT);
-    pinMode(FET_WELD2, OUTPUT);
+    pinMode(FET_WELD, OUTPUT);
     pinMode(PEDAL_PIN, INPUT_PULLUP);
     pinMode(THERM_PIN, INPUT);
 
     digitalWrite(FET_CHARGE, LOW);
-    digitalWrite(FET_WELD1, LOW);
-    digitalWrite(FET_WELD2, LOW);
+    digitalWrite(FET_WELD, LOW);
 
     analogReadResolution(12);
-    // analogSetPinAttenuation(THERM_PIN, ADC_11db); // optional
 
+    // ---- INA226 init ----
     Wire.begin(I2C_SDA, I2C_SCL);
+    Wire.setClock(100000);  // safer speed
+
+    uint8_t addrs[] = {0x40, 0x44, 0x41};
+    for (uint8_t addr : addrs) {
+        Wire.beginTransmission(addr);
+        uint8_t err = Wire.endTransmission();
+        Serial.printf("I2C addr 0x%02X -> %s\n",
+                      addr, err == 0 ? "OK" : "NO ACK");
+    }
     if (ina.begin(&Wire)) {
         Serial.println("✅ INA226 (pack) initialized");
         Serial.printf("   Calibration: 0x%04X\n", ina.getCalibration());
@@ -352,6 +453,19 @@ void setup() {
         Serial.println("⚠️ INA226 init failed - charging disabled");
     }
 
+    // ---- ADS1256 init ----
+    Serial.println("Initializing ADS1256 on SPI1...");
+    // SCK=40, MISO=38, MOSI=39  (matches MicroPython)
+    spiAds.begin(40, 38, 39);
+    if (ads.begin(spiAds)) {
+        adsAvailable = true;
+        Serial.println("✅ ADS1256 initialized (weld current)");
+    } else {
+        adsAvailable = false;
+        Serial.println("⚠️ ADS1256 init failed");
+    }
+
+    // ---- WiFi + TCP server ----
     WiFi.mode(WIFI_STA);
     esp_wifi_set_protocol(WIFI_IF_STA,
         WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
