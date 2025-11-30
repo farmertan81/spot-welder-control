@@ -23,7 +23,7 @@ REG_ADCON    = 0x02
 REG_DRATE    = 0x03
 
 # Data rates
-DRATE_30000SPS = 0xF0
+DRATE_30000SPS = 0xC0
 DRATE_15000SPS = 0xE0
 DRATE_7500SPS  = 0xD0
 DRATE_3750SPS  = 0xC0
@@ -41,7 +41,7 @@ class ADS1256:
         
         # Scaling constants (from your Pi driver)
         self.Vref = 2.5  # Internal reference
-        self.gain_adc = 1.0  # PGA gain
+        self.gain_adc = 16.0  # PGA gain = 16
         self.FS = 8388607.0  # 24-bit signed max
         self.Rsh = 50e-6  # 50 µΩ shunt
         self.G_AMC = 1.0  # AMC1311B gain
@@ -105,9 +105,9 @@ class ADS1256:
         self.write_reg(REG_MUX, MUX_AIN2_AIN3)
         
         # ADCON: PGA=1, CLK=internal
-        self.write_reg(REG_ADCON, 0x00)
+        self.write_reg(REG_ADCON, 0x05)  # PGA=32
         
-        # DRATE: 30 kSPS for fast weld capture
+        # DRATE: 2 kSPS (realistic for SPI speed + interrupt overhead)
         self.write_reg(REG_DRATE, DRATE_30000SPS)
         
         # Perform self-calibration
@@ -223,3 +223,40 @@ class ADS1256:
         current = -v / self.Rsh
         return current
 
+
+    def read_counts_isr(self):
+        """Read 24-bit value in ISR - assumes DRDY triggered, no check"""
+        # Data is ready (guaranteed by ISR trigger), read immediately
+        self.cs.value(0)
+        data = self.spi.read(3)
+        self.cs.value(1)
+
+        # Convert 24-bit two's complement to signed integer
+        raw = (data[0] << 16) | (data[1] << 8) | data[2]
+        if raw & 0x800000:
+            raw -= 0x1000000
+
+        return raw
+
+    def read_current_isr(self):
+        """Read current in ISR mode (no DRDY check)"""
+        counts = self.read_counts_isr()
+        voltage = counts * self.volts_per_code
+        voltage_corrected = voltage - self.offset_voltage
+        current = -voltage_corrected / self.Rsh
+        return current
+
+    def read_current_fast(self):
+        """Fast polling read - check DRDY and read immediately"""
+        if self.drdy.value() == 0:  # Data ready
+            self.cs.value(0)
+            data = self.spi.read(3)
+            self.cs.value(1)
+            
+            raw = (data[0] << 16) | (data[1] << 8) | data[2]
+            if raw & 0x800000:
+                raw -= 0x1000000
+            
+            voltage = raw * self.volts_per_code - self.offset_voltage
+            return -voltage / self.Rsh
+        return None

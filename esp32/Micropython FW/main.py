@@ -16,6 +16,10 @@ from machine import Pin, SoftI2C, deepsleep, UART, ADC
 ADS1256_AVAILABLE = False
 try:
     import ads1256_esp32
+    import sys
+    if "ads1256_esp32" in sys.modules:
+        del sys.modules["ads1256_esp32"]
+        import ads1256_esp32
     from machine import SPI
     ADS1256_AVAILABLE = True
     print("✓ ADS1256 driver imported")
@@ -208,6 +212,9 @@ except Exception as e:
 
 # ---- ADS1256 Current Sensor Initialization ----
 weld_samples = []
+weld_interrupt_samples = []
+weld_interrupt_active = False
+weld_start_time = 0
 MAX_WELD_SAMPLES = 1000
 
 if ADS1256_AVAILABLE:
@@ -282,19 +289,15 @@ def read_thermistor_temp():
     try:
         adc_value = therm_adc.read()
         voltage = (adc_value / 4095.0) * 3.3
-        #print("THERM_DBG: adc=%s, V=%.3f" % (adc_value, voltage))
 
         # If ADC returned None or 0, bail
         if adc_value is None:
-            #print("THERM_DBG: adc_value is None")
             return float('nan')
 
         if voltage <= 0.0 or voltage >= 3.3:
-            #print("THERM_DBG: voltage out of range")
             return float('nan')
 
         resistance = SERIES_RESISTOR * voltage / (3.3 - voltage)
-        #print("THERM_DBG: R_therm=%.1f ohms" % resistance)
 
         steinhart = resistance / THERMISTOR_NOMINAL
         steinhart = math.log(steinhart)
@@ -302,12 +305,10 @@ def read_thermistor_temp():
         steinhart += 1.0 / (TEMPERATURE_NOMINAL + 273.15)
         steinhart = 1.0 / steinhart
         steinhart -= 273.15
-        #print("THERM_DBG: raw_temp=%.2f C" % steinhart)
 
         # Outlier rejection
         if temp_last_valid is not None:
             if abs(steinhart - temp_last_valid) > TEMP_OUTLIER_THRESHOLD:
-                #print("THERM_DBG: outlier, using last_valid=%.2f" % temp_last_valid)
                 return temp_last_valid  # Reject spike, return last good value
         
         # Exponential moving average
@@ -317,10 +318,8 @@ def read_thermistor_temp():
             temp_ema = (TEMP_EMA_ALPHA * steinhart) + ((1 - TEMP_EMA_ALPHA) * temp_ema)
         
         temp_last_valid = temp_ema
-        #print("THERM_DBG: ema=%.2f C" % temp_ema)
         return round(temp_ema, 1)
     except Exception as e:
-        #print("THERM_DBG: EXCEPTION:", repr(e))
         return temp_last_valid if temp_last_valid is not None else float('nan')
 
 # ---- INA226 / Scaling ----
@@ -567,8 +566,24 @@ def weld_safe_to_fire(v_pack_now):
         return False, "CHG_ON"
     return True, "OK"
 
+# Global for interrupt-based sampling
+weld_interrupt_samples = []
+weld_interrupt_active = False
+
+def drdy_interrupt_handler(pin):
+    """ISR: Called when DRDY goes low (data ready)"""
+    global weld_interrupt_samples, weld_interrupt_active
+    if weld_interrupt_active and ADS1256_AVAILABLE and adc_current:
+        try:
+            t_us = time.ticks_diff(time.ticks_us(), weld_start_time)
+            current = adc_current.read_current_isr()
+            if current is not None:
+                weld_interrupt_samples.append((t_us, current))
+        except:
+            pass
+
 def do_weld_ms(pulse_ms):
-    global next_weld_ok_at, weld_samples
+    global next_weld_ok_at, weld_samples, weld_interrupt_samples, weld_interrupt_active, weld_start_time
     if pulse_ms < 1: pulse_ms = 1
     if pulse_ms > 5000: pulse_ms = 5000
     try:
@@ -581,82 +596,76 @@ def do_weld_ms(pulse_ms):
     FET_CHARGE.off()
     time.sleep(0.001)
 
-    # Clear sample buffer
+    # Clear sample buffers
     weld_samples = []
-    
-    # Start ADS1256 continuous mode FIRST
+
+    # Read starting voltage ONCE
+    v_start = None
+    raw = i2c_read_u16(REG_BUS_VOLT)
+    if raw is not None:
+        v_start = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
+
+    # Start ADS1256 continuous mode (NO INTERRUPT)
     if ADS1256_AVAILABLE and adc_current:
         adc_current.start_continuous()
-        # Small delay for ADC to stabilize
-        time.sleep_us(100)
+        time.sleep_us(500)
 
-    # Set t=0 RIGHT before firing
-    t_start_us = time.ticks_us()
-    t_start_ms = time.ticks_ms()
+    # Set t=0 and FIRE!
+    weld_start_time = time.ticks_us()
+    t_end_us = weld_start_time + (pulse_ms * 1000)
     FET_WELD1.on(); FET_WELD2.on()
-    # Fast sampling during weld
-    sample_count = 0
-    v_start = None
-    v_end = None
-    
-    while time.ticks_diff(time.ticks_ms(), t_start_ms) < pulse_ms:
-        t_us = time.ticks_diff(time.ticks_us(), t_start_us)
-        
-        # Read voltage
-        raw = i2c_read_u16(REG_BUS_VOLT)
-        if raw is not None:
-            v = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
-            if v_start is None:
-                v_start = v
-            v_end = v
-            
-            # Read current from ADS1256 (if DRDY ready)
-            current = None
-            if ADS1256_AVAILABLE and adc_current:
-                try:
-                    current = adc_current.read_current_fast()
-                    weld_samples.append((t_us, v, current))
-                except:
-                    pass
-            
-            # Send data to UART
+
+    # POLLING LOOP - read as fast as possible
+    while time.ticks_diff(t_end_us, time.ticks_us()) > 0:
+        if ADS1256_AVAILABLE and adc_current:
+            current = adc_current.read_current_fast()
             if current is not None:
-                msg = "WDATA,%.3f,%.1f,%d" % (v, current, t_us)
-            else:
-                msg = "VDATA,%.3f,%d" % (v, t_us)
-            print_both(msg)
-            sample_count += 1
+                t_us = time.ticks_diff(time.ticks_us(), weld_start_time)
+                weld_samples.append((t_us, current))
 
+    # Turn off FETs
     FET_WELD1.off(); FET_WELD2.off()
+    t_actual_us = time.ticks_diff(time.ticks_us(), weld_start_time)
 
-    # Stop ADS1256 continuous mode
+    # Stop ADS1256
     if ADS1256_AVAILABLE and adc_current:
         adc_current.stop_continuous()
-    t_actual_us = time.ticks_diff(time.ticks_us(), t_start_us)
+
+    # Read ending voltage ONCE
+    v_end = None
+    raw = i2c_read_u16(REG_BUS_VOLT)
+    if raw is not None:
+        v_end = (raw * VBUS_LSB) * VBUS_SCALE.get(INA_ADDR, 1.0)
+
+    # Now send all the data over UART
+    for t_us, current in weld_samples:
+        v_interp = v_start if v_start else 0.0
+        if v_start and v_end and t_actual_us > 0:
+            v_interp = v_start - (v_start - v_end) * (t_us / t_actual_us)
+        print_both("WDATA,%.3f,%.1f,%d" % (v_interp, current, t_us))
 
     # Calculate statistics
     peak_current = 0.0
     energy_j = 0.0
-    
+
     if len(weld_samples) > 1:
-        for _, _, i in weld_samples:
-            if i is not None and abs(i) > abs(peak_current):
+        for _, i in weld_samples:
+            if abs(i) > abs(peak_current):
                 peak_current = i
-        
-        R_total = 0.010
+
+        R_total = 0.00106
         for idx in range(len(weld_samples) - 1):
-            t1, v1, i1 = weld_samples[idx]
-            t2, v2, i2 = weld_samples[idx + 1]
-            if i1 is not None and i2 is not None:
-                dt = (t2 - t1) / 1e6
-                p_avg = ((i1**2 + i2**2) / 2.0) * R_total
-                energy_j += p_avg * dt
-    
+            t1, i1 = weld_samples[idx]
+            t2, i2 = weld_samples[idx + 1]
+            dt = (t2 - t1) / 1e6
+            p_avg = ((i1**2 + i2**2) / 2.0) * R_total
+            energy_j += p_avg * dt
+
     v_drop = 0.0
     if v_start is not None and v_end is not None:
         v_drop = v_start - v_end
 
-    print_both("WDATA_END,%d,%d,%.1f,%.2f,%.3f" % (sample_count, t_actual_us, peak_current, energy_j, v_drop))
+    print_both("WDATA_END,%d,%d,%.1f,%.2f,%.3f" % (len(weld_samples), t_actual_us, peak_current, energy_j, v_drop))
 
     try:
         led[0] = prev
@@ -664,7 +673,6 @@ def do_weld_ms(pulse_ms):
     except Exception:
         pass
 
-    next_weld_ok_at = time.ticks_add(time.ticks_ms(), WELD_LOCKOUT_MS)
 
 def trigger_weld():
     global PULSE_MS, last_weld_time
@@ -1065,6 +1073,14 @@ try:
                 break
             cmd_handle(line_uart)
 
+
+        # COMMAND POLL from TCP
+        if tcp_server:
+            for _ in range(4):
+                line_tcp = tcp_server.try_read_line()
+                if line_tcp is None:
+                    break
+                cmd_handle(line_tcp)
         time.sleep(0.05)
 
 except KeyboardInterrupt:
